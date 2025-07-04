@@ -1,0 +1,21 @@
+[package]
+description = "A tunnel protocol based on quic protocol."
+documentation = "https://docs.rs/n3-rs"
+edition = "2024"
+license = "MIT"
+name = "n3-rs"
+repository = "https://github.com/quic-lab/n3"
+version = "0.1.0"
+
+[dependencies]
+quiche = { version = "^0.24" }
+mio = { version = "^1", features = ["net", "os-poll"] }
+thiserror = { version = "^2" }
+
+[dev-dependencies]
+divan = "0.1.21"
+
+
+[[bench]]
+name = "token_next"
+harness = false

@@ -7,14 +7,14 @@ fn main() {
 }
 
 #[bench]
-fn bench_local(bencher: Bencher) {
+fn bench_local_token_generator(bencher: Bencher) {
     let next = LocalTokenGenerator::default();
 
     bencher.bench_local(|| next.next());
 }
 
 #[bench]
-fn bench_overflow_add(bencher: Bencher) {
+fn bench_usize_overflow_add(bencher: Bencher) {
     let mut v = 0usize;
 
     bencher.bench_local(|| divan::black_box((v, _) = v.overflowing_add(1)));

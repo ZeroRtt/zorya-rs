@@ -1,9 +1,9 @@
 [package]
-description = "A tunnel protocol based on quic protocol."
-documentation = "https://docs.rs/n3-rs"
+description = "Integrating quiche into the mio framework"
+documentation = "https://docs.rs/mio-quiche"
 edition = "2024"
 license = "MIT"
-name = "n3-rs"
+name = "mio-quiche"
 repository = "https://github.com/quic-lab/n3"
 version = "0.1.0"
 
@@ -13,16 +13,3 @@ mio = { version = "^1", features = ["net", "os-poll"] }
 thiserror = { version = "^2" }
 boring = { version = "^4.17" }
 log = { version = "^0.4" }
-
-[dev-dependencies]
-divan = "0.1.21"
-
-
-[[bench]]
-name = "token_next"
-harness = false
-
-
-[[bench]]
-name = "simple_address_validator"
-harness = false

@@ -2,6 +2,9 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod channel;
 pub mod errors;
-pub mod stream;
+pub mod quic;
+pub mod rproxy;
 pub mod token;
+pub mod transfer;

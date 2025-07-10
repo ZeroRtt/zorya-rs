@@ -1,9 +1,9 @@
 [package]
-description = "Integrating quiche into the mio framework"
-documentation = "https://docs.rs/mio-quiche"
+description = "Asynchronous wrapper around quiche for n3 projects."
+documentation = "https://docs.rs/n3-quic"
 edition = "2024"
 license = "MIT"
-name = "mio-quiche"
+name = "n3-quic"
 repository = "https://github.com/quic-lab/n3"
 version = "0.1.0"
 
@@ -13,3 +13,5 @@ mio = { version = "^1", features = ["net", "os-poll"] }
 thiserror = { version = "^2" }
 boring = { version = "^4.17" }
 log = { version = "^0.4" }
+dashmap = "^6"
+num_cpus = "1.17.0"

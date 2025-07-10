@@ -32,6 +32,7 @@ pub trait AddressValidator {
 }
 
 /// A default implementation for [`AddressValidator`]
+#[derive(Debug)]
 pub struct SimpleAddressValidator([u8; 20], Duration);
 
 impl SimpleAddressValidator {

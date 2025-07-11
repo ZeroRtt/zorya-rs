@@ -1,0 +1,16 @@
+[package]
+description = "A binary-heap based timing wheel implementation."
+documentation = "https://docs.rs/timing-wheel"
+edition = "2024"
+license = "MIT"
+name = "timing-wheel"
+repository = "https://github.com/quic-lab/n3"
+version = "0.1.0"
+
+[dev-dependencies]
+divan = "0.1.21"
+
+
+[[bench]]
+name = "bench_timing_wheel"
+harness = false

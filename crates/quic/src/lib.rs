@@ -4,6 +4,6 @@
 
 mod token;
 
+pub mod driver;
 pub mod errors;
-pub mod server;
 pub mod validator;

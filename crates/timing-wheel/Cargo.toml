@@ -4,7 +4,7 @@ documentation = "https://docs.rs/timing-wheel"
 edition = "2024"
 license = "MIT"
 name = "timing-wheel"
-repository = "https://github.com/quic-lab/n3"
+repository = "https://github.com/quic-lab/n3/crates/timing-wheel"
 version = "0.1.1"
 
 [dev-dependencies]

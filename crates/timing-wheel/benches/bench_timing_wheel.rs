@@ -8,7 +8,7 @@ fn main() {
 }
 
 #[divan::bench]
-fn bench_binary_heap(bencher: Bencher) {
+fn bench_spin(bencher: Bencher) {
     let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
 
     let now = Instant::now();
@@ -22,5 +22,16 @@ fn bench_binary_heap(bencher: Bencher) {
     bencher.bench_local(|| {
         time_wheel.spin(&mut wakers);
         wakers.clear();
+    });
+}
+
+#[divan::bench]
+fn bench_insert(bencher: Bencher) {
+    let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
+
+    let now = Instant::now();
+
+    bencher.bench_local(|| {
+        time_wheel.deadline(now + Duration::from_millis(1), ());
     });
 }

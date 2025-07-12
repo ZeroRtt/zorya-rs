@@ -137,7 +137,7 @@ impl<T> TimeWheel<T> {
         self.deadline(Instant::now() + duration, value)
     }
 
-    //// Spin the wheel according to the current time
+    /// Spin the wheel according to the current time and detect(returns) the expiry timers.
     pub fn spin(&mut self, wakers: &mut Vec<T>) {
         let to_slot = (Instant::now() - self.start).as_micros() as u64 / self.tick_interval;
 

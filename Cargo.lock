@@ -390,11 +390,13 @@ version = "0.1.0"
 dependencies = [
  "boring",
  "dashmap",
+ "divan",
  "log",
  "mio",
  "num_cpus",
  "quiche",
  "thiserror",
+ "timing-wheel",
 ]
 
 [[package]]

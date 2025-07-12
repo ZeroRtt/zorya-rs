@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 name = "timing-wheel"
 repository = "https://github.com/quic-lab/n3"
-version = "0.1.0"
+version = "0.1.1"
 
 [dev-dependencies]
 divan = "0.1.21"

@@ -17,7 +17,10 @@ fn bench_binary_heap(bencher: Bencher) {
         time_wheel.deadline(now + Duration::from_millis(i), ());
     }
 
+    let mut wakers = vec![];
+
     bencher.bench_local(|| {
-        time_wheel.spin();
+        time_wheel.spin(&mut wakers);
+        wakers.clear();
     });
 }

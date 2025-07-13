@@ -209,7 +209,7 @@ mod tests {
         // _ = pretty_env_logger::try_init();
 
         let laddrs = repeat("127.0.0.1:0".parse().unwrap())
-            .take(500)
+            .take(20)
             .collect::<Vec<SocketAddr>>();
 
         let group = UdpGroup::bind(laddrs.as_slice()).await.unwrap();

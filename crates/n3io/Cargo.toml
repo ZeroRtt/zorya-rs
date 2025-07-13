@@ -1,0 +1,24 @@
+[package]
+description = "An asynchronous interface wrapper for mio library"
+documentation = "https://docs.rs/n3"
+edition = "2024"
+license = "MIT"
+name = "n3io"
+repository = "https://github.com/quic-lab/n3/crates/n3io"
+version = "0.1.1"
+
+[dependencies]
+mio = { version = "^1", features = ["net", "os-poll"] }
+log = { version = "^0.4" }
+dashmap = { version = "^6.1" }
+timing-wheel = { path = "../timing-wheel", version = "^0.1" }
+futures = "^0.3"
+libc = "^0.2"
+
+[dev-dependencies]
+futures-test = "^0.3"
+
+[features]
+default = ["global_reactor"]
+global_reactor = ["background_poll"]
+background_poll = []

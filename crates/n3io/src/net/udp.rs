@@ -146,7 +146,7 @@ impl UdpGroup {
                 // poll specific socket
                 if let Some(token) = token {
                     log::trace!(
-                        "group={:?}, poll specific socket {:?}",
+                        "call recv_from, readiness=true, group={:?}, socket={:?}",
                         self.group.group_token,
                         token
                     );
@@ -164,21 +164,21 @@ impl UdpGroup {
                 }
 
                 // poll all sockets
-                for (token, socket) in &self.mio_udp_sockets {
-                    log::trace!(
-                        "group={:?}, poll socket {:?}",
-                        self.group.group_token,
-                        token
-                    );
+                // for (token, socket) in &self.mio_udp_sockets {
+                //     log::trace!(
+                //         "call recv_from, readiness=false, group={:?}, socket={:?}",
+                //         self.group.group_token,
+                //         token
+                //     );
 
-                    let to = socket.local_addr()?;
+                //     let to = socket.local_addr()?;
 
-                    match socket.recv_from(buf) {
-                        Ok((read_size, from)) => return Ok((read_size, from, to)),
-                        Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                        Err(err) => return Err(err),
-                    }
-                }
+                //     match socket.recv_from(buf) {
+                //         Ok((read_size, from)) => return Ok((read_size, from, to)),
+                //         Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                //         Err(err) => return Err(err),
+                //     }
+                // }
 
                 Err(Error::new(
                     ErrorKind::WouldBlock,
@@ -209,7 +209,7 @@ mod tests {
         // _ = pretty_env_logger::try_init();
 
         let laddrs = repeat("127.0.0.1:0".parse().unwrap())
-            .take(5)
+            .take(500)
             .collect::<Vec<SocketAddr>>();
 
         let group = UdpGroup::bind(laddrs.as_slice()).await.unwrap();

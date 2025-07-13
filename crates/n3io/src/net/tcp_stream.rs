@@ -48,7 +48,7 @@ impl TcpStream {
         )?;
 
         poll_fn(|cx| {
-            reactor.poll_io(cx, token, Interest::WRITABLE, None, || {
+            reactor.poll_io(cx, token, Interest::WRITABLE, None, |_| {
                 poll_ready(&mio_tcp_stream)
             })
         })
@@ -69,7 +69,7 @@ impl AsyncWrite for &TcpStream {
         buf: &[u8],
     ) -> std::task::Poll<Result<usize>> {
         self.reactor
-            .poll_io(cx, self.token, Interest::WRITABLE, None, || {
+            .poll_io(cx, self.token, Interest::WRITABLE, None, |_| {
                 (&self.mio_tcp_stream).write(buf)
             })
     }
@@ -79,7 +79,7 @@ impl AsyncWrite for &TcpStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<()>> {
         self.reactor
-            .poll_io(cx, self.token, Interest::WRITABLE, None, || {
+            .poll_io(cx, self.token, Interest::WRITABLE, None, |_| {
                 (&self.mio_tcp_stream).flush()
             })
     }
@@ -101,7 +101,7 @@ impl AsyncWrite for TcpStream {
         buf: &[u8],
     ) -> std::task::Poll<Result<usize>> {
         self.reactor
-            .poll_io(cx, self.token, Interest::WRITABLE, None, || {
+            .poll_io(cx, self.token, Interest::WRITABLE, None, |_| {
                 (&self.mio_tcp_stream).write(buf)
             })
     }
@@ -111,7 +111,7 @@ impl AsyncWrite for TcpStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<()>> {
         self.reactor
-            .poll_io(cx, self.token, Interest::WRITABLE, None, || {
+            .poll_io(cx, self.token, Interest::WRITABLE, None, |_| {
                 (&self.mio_tcp_stream).flush()
             })
     }
@@ -133,8 +133,8 @@ impl AsyncRead for &TcpStream {
         buf: &mut [u8],
     ) -> std::task::Poll<Result<usize>> {
         self.reactor
-            .poll_io(cx, self.token, Interest::READABLE, None, || {
-                (&self.mio_tcp_stream).read(buf)
+            .poll_io(cx, self.token, Interest::READABLE, None, |_| {
+                (&self.mio_tcp_stream).read(&mut *buf)
             })
     }
 }
@@ -146,7 +146,7 @@ impl AsyncRead for TcpStream {
         buf: &mut [u8],
     ) -> std::task::Poll<Result<usize>> {
         self.reactor
-            .poll_io(cx, self.token, Interest::READABLE, None, || {
+            .poll_io(cx, self.token, Interest::READABLE, None, |_| {
                 (&self.mio_tcp_stream).read(buf)
             })
     }

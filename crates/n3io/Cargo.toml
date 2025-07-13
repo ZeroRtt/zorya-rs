@@ -12,11 +12,12 @@ mio = { version = "^1", features = ["net", "os-poll"] }
 log = { version = "^0.4" }
 dashmap = { version = "^6.1" }
 timing-wheel = { path = "../timing-wheel", version = "^0.1" }
-futures = "^0.3"
+futures = { version = "^0.3", features = ["executor", "thread-pool"] }
 libc = "^0.2"
 
 [dev-dependencies]
 futures-test = "^0.3"
+pretty_env_logger = "0.5.0"
 
 [features]
 default = ["global_reactor"]

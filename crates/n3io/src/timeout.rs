@@ -15,7 +15,7 @@ use crate::reactor::Reactor;
 pub trait TimeoutExt<'a, T>: Future<Output = Result<T>> + Sized + Send + 'a {
     #[cfg(feature = "global_reactor")]
     /// See [`TimeoutExt::timeout_with`]
-    fn timeout(self, duration: Duration) -> impl Future<Output = Self::Output> {
+    fn timeout(self, duration: Duration) -> impl Future<Output = Self::Output> + Unpin {
         use crate::reactor::global_reactor;
 
         Self::timeout_with(self, global_reactor().clone(), duration)
@@ -26,7 +26,7 @@ pub trait TimeoutExt<'a, T>: Future<Output = Result<T>> + Sized + Send + 'a {
         self,
         reactor: Reactor,
         duration: Duration,
-    ) -> impl Future<Output = Self::Output> {
+    ) -> impl Future<Output = Self::Output> + Unpin {
         let deadline = Instant::now() + duration;
         let timer = reactor.deadline(deadline);
         TimeoutFuture {

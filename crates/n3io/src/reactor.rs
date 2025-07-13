@@ -23,6 +23,7 @@ enum IoState {
     Deadline(Instant),
     Timer(u64, Waker),
     Waker(Waker),
+    GroupReady(Vec<Token>),
     None,
 }
 
@@ -39,6 +40,8 @@ struct ReactorImpl {
     io_readable_stats: DashMap<Token, IoState>,
     /// stats for io writting ops.
     io_writable_stats: DashMap<Token, IoState>,
+    /// mapping io_token => group_io_token.
+    group_io_mapping: DashMap<Token, Token>,
     /// timing-wheel
     timing_wheel: Mutex<TimeWheel<(Token, bool)>>,
     /// mio registry.
@@ -51,6 +54,7 @@ impl ReactorImpl {
             token_gen: Default::default(),
             io_readable_stats: Default::default(),
             io_writable_stats: Default::default(),
+            group_io_mapping: Default::default(),
             timing_wheel: Mutex::new(TimeWheel::new(tick_interval)),
             registry,
         }
@@ -124,21 +128,20 @@ impl Reactor {
     ) -> Result<(Self, JoinHandle<Result<()>>)> {
         let (reactor, poll) = Self::new(tick_interval)?;
 
-        let reactor_impl = reactor.0.clone();
+        let background = reactor.clone();
 
-        let join_handle = std::thread::spawn(move || {
-            Self::background_loop(poll, max_poll_events, tick_interval, reactor_impl)
-        });
+        let join_handle =
+            std::thread::spawn(move || background.run(poll, max_poll_events, tick_interval));
 
         Ok((reactor, join_handle))
     }
 
-    #[cfg(feature = "background_poll")]
-    fn background_loop(
+    /// Consume and run this reactor.
+    pub fn run(
+        self,
         mut poll: mio::Poll,
         max_poll_events: usize,
         tick_interval: Duration,
-        reactor: Arc<ReactorImpl>,
     ) -> Result<()> {
         let mut events = Events::with_capacity(max_poll_events);
 
@@ -151,11 +154,37 @@ impl Reactor {
             poll.poll(&mut events, Some(tick_interval))?;
 
             for event in events.iter() {
+                let token = event.token();
+
+                let (token, is_group) =
+                    if let Some(group_token) = self.0.group_io_mapping.get(&token) {
+                        (*group_token, true)
+                    } else {
+                        (token, false)
+                    };
+
+                log::trace!(
+                    "poll token={:?}, is_group={}, origin_token={:?}, readable={}, writable={}",
+                    token,
+                    is_group,
+                    event.token(),
+                    event.is_readable(),
+                    event.is_writable(),
+                );
+
                 if event.is_readable() {
-                    if let Some(mut v) = reactor.io_readable_stats.get_mut(&event.token()) {
+                    if let Some(mut v) = self.0.io_readable_stats.get_mut(&token) {
                         match std::mem::take(&mut *v) {
                             IoState::Waker(waker) | IoState::Timer(_, waker) => {
                                 wakers.push(waker);
+                                if is_group {
+                                    *v = IoState::GroupReady(vec![event.token()]);
+                                }
+                            }
+                            IoState::GroupReady(mut tokens) => {
+                                assert!(is_group);
+                                tokens.push(event.token());
+                                *v = IoState::GroupReady(tokens);
                             }
                             _ => {}
                         }
@@ -163,10 +192,19 @@ impl Reactor {
                 }
 
                 if event.is_writable() {
-                    if let Some(mut v) = reactor.io_writable_stats.get_mut(&event.token()) {
+                    if let Some(mut v) = self.0.io_writable_stats.get_mut(&token) {
                         match std::mem::take(&mut *v) {
                             IoState::Waker(waker) => {
                                 wakers.push(waker);
+
+                                if is_group {
+                                    *v = IoState::GroupReady(vec![event.token()]);
+                                }
+                            }
+                            IoState::GroupReady(mut tokens) => {
+                                assert!(is_group);
+                                tokens.push(event.token());
+                                *v = IoState::GroupReady(tokens);
                             }
                             _ => {}
                         }
@@ -174,13 +212,13 @@ impl Reactor {
                 }
             }
 
-            reactor.timing_wheel.lock().unwrap().spin(&mut timers);
+            self.0.timing_wheel.lock().unwrap().spin(&mut timers);
 
             for (timer, (token, is_read)) in timers.drain(..) {
                 let _wakers = if is_read {
-                    &reactor.io_readable_stats
+                    &self.0.io_readable_stats
                 } else {
-                    &reactor.io_writable_stats
+                    &self.0.io_writable_stats
                 };
 
                 if let Some(mut v) = _wakers.get_mut(&token) {
@@ -301,11 +339,18 @@ impl Reactor {
         io: Token,
         interest: Interest,
         deadline: Option<Instant>,
-        io_f: F,
+        mut io_f: F,
     ) -> Poll<Result<T>>
     where
-        F: FnOnce() -> Result<T>,
+        F: FnMut(Option<Token>) -> Result<T>,
     {
+        log::trace!(
+            "poll_io token={:?}, interest={:?}, deadline={:?}",
+            io,
+            interest,
+            deadline
+        );
+
         let (wakers, is_read) = if interest.is_readable() {
             (&self.0.io_readable_stats, true)
         } else {
@@ -314,61 +359,80 @@ impl Reactor {
 
         // When calling the `get_mut` method with the same key value at the same time, the later calls will be blocked.
         if let Some(mut op) = wakers.get_mut(&io) {
-            match std::mem::take(&mut *op) {
-                IoState::Timeout => {
-                    return Poll::Ready(Err(Error::new(
-                        ErrorKind::TimedOut,
-                        format!("io({:?},{:?}) timeout.", io, interest),
-                    )));
-                }
-                IoState::Timer(timer, waker) => {
-                    // re-assign stat.
-                    *op = IoState::Timer(timer, waker);
-                }
-                IoState::Deadline(_) => {
-                    unreachable!("call `poll_io` on `deadline`");
-                }
-                _ => {}
-            }
+            loop {
+                let mut wake_from = None;
+                match std::mem::take(&mut *op) {
+                    IoState::Timeout => {
+                        return Poll::Ready(Err(Error::new(
+                            ErrorKind::TimedOut,
+                            format!("io({:?},{:?}) timeout.", io, interest),
+                        )));
+                    }
+                    IoState::Timer(timer, waker) => {
+                        // re-assign stat.
+                        *op = IoState::Timer(timer, waker);
+                    }
+                    IoState::GroupReady(mut tokens) => {
+                        if let Some(token) = tokens.pop() {
+                            wake_from = Some(token);
+                        }
 
-            match io_f() {
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    if let Some(deadline) = deadline {
-                        match &*op {
-                            // update waker.
-                            IoState::Timer(timer, _) => {
-                                *op = IoState::Timer(*timer, cx.waker().clone());
-                            }
-                            IoState::None => {
-                                match self
-                                    .0
-                                    .timing_wheel
-                                    .lock()
-                                    .unwrap()
-                                    .deadline(deadline, (io, is_read))
-                                {
-                                    Some(timer) => {
-                                        *op = IoState::Timer(timer, cx.waker().clone());
-                                    }
-                                    None => {
-                                        return Poll::Ready(Err(Error::new(
-                                            ErrorKind::TimedOut,
-                                            format!("io({:?},{:?}) timeout.", io, interest),
-                                        )));
+                        if tokens.is_empty() {
+                            *op = IoState::None;
+                        } else {
+                            *op = IoState::GroupReady(tokens);
+                        }
+                    }
+                    IoState::Deadline(_) => {
+                        unreachable!("call `poll_io` on `deadline`");
+                    }
+                    _ => {}
+                }
+
+                match io_f(wake_from) {
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        if let Some(deadline) = deadline {
+                            match &*op {
+                                // has pending readiness.
+                                IoState::GroupReady(_) => {
+                                    continue;
+                                }
+                                // update waker.
+                                IoState::Timer(timer, _) => {
+                                    *op = IoState::Timer(*timer, cx.waker().clone());
+                                }
+                                IoState::None => {
+                                    match self
+                                        .0
+                                        .timing_wheel
+                                        .lock()
+                                        .unwrap()
+                                        .deadline(deadline, (io, is_read))
+                                    {
+                                        Some(timer) => {
+                                            *op = IoState::Timer(timer, cx.waker().clone());
+                                        }
+                                        None => {
+                                            return Poll::Ready(Err(Error::new(
+                                                ErrorKind::TimedOut,
+                                                format!("io({:?},{:?}) timeout.", io, interest),
+                                            )));
+                                        }
                                     }
                                 }
+                                _ => {
+                                    unreachable!("poll_io with deadline in invalid state.");
+                                }
                             }
-                            _ => {
-                                unreachable!("poll_io with deadline in invalid state.");
-                            }
+                        } else {
+                            *op = IoState::Waker(cx.waker().clone());
+                            log::trace!("register waker, token={:?}, wait_read_op={}", io, is_read);
                         }
-                    } else {
-                        *op = IoState::Waker(cx.waker().clone());
-                    }
 
-                    Poll::Pending
+                        return Poll::Pending;
+                    }
+                    r => return Poll::Ready(r),
                 }
-                r => Poll::Ready(r),
             }
         } else {
             Poll::Ready(Err(Error::new(
@@ -376,6 +440,44 @@ impl Reactor {
                 format!("The io resource({:?}) is not found.", io),
             )))
         }
+    }
+
+    /// Group a set of tokens.
+    pub fn group<'a, G: IntoIterator<Item = &'a Token>>(&self, tokens: G) -> Result<Token> {
+        let group_token = self.0.next_token(Interest::READABLE);
+
+        for token in tokens.into_iter() {
+            assert!(
+                self.0
+                    .group_io_mapping
+                    .insert(*token, group_token)
+                    .is_none(),
+                "token({:?}) group by twice.",
+                token
+            );
+        }
+
+        Ok(group_token)
+    }
+
+    /// ungroup a group.
+    pub fn ungroup<'a, G: IntoIterator<Item = &'a Token>>(
+        &self,
+        group: Token,
+        tokens: G,
+    ) -> Result<()> {
+        self.0.io_readable_stats.remove(&group);
+        self.0.io_writable_stats.remove(&group);
+
+        for token in tokens.into_iter() {
+            assert!(
+                self.0.group_io_mapping.remove(token).is_some(),
+                "token({:?}) is not group({:?}).",
+                token,
+                group
+            );
+        }
+        Ok(())
     }
 }
 
@@ -444,7 +546,7 @@ mod tests {
                     token,
                     Interest::READABLE,
                     Some(Instant::now() + Duration::from_millis(100)),
-                    || -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
+                    |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
                 )
                 .is_pending(),
         );
@@ -456,7 +558,7 @@ mod tests {
             token,
             Interest::READABLE,
             Some(Instant::now() + Duration::from_millis(100)),
-            || -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
+            |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
         );
 
         assert!(poll.is_ready());

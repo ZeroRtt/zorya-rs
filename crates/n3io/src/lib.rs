@@ -2,6 +2,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod group;
 pub mod net;
 pub mod reactor;
 pub mod timeout;

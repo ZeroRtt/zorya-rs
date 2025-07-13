@@ -53,7 +53,7 @@ impl TcpListener {
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
         let (mut mio_tcp_stream, raddr) = poll_fn(|cx| {
             self.reactor
-                .poll_io(cx, self.token, Interest::READABLE, None, || {
+                .poll_io(cx, self.token, Interest::READABLE, None, |_| {
                     self.mio_tcp_listener.accept()
                 })
         })
@@ -80,6 +80,8 @@ impl TcpListener {
 mod tests {
     use std::{io::ErrorKind, time::Duration};
 
+    use futures::{AsyncReadExt, AsyncWriteExt, executor::ThreadPool};
+
     use crate::timeout::TimeoutExt;
 
     use super::*;
@@ -100,5 +102,32 @@ mod tests {
             ErrorKind::TimedOut,
             "expect timeout"
         );
+    }
+
+    #[futures_test::test]
+    async fn test_echo() {
+        let spawner = ThreadPool::new().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+
+        let laddr = listener.local_addr().unwrap();
+
+        spawner.spawn_ok(async move {
+            while let Ok((conn, _)) = listener.accept().await {
+                futures::io::copy(&conn, &mut &conn).await.unwrap();
+            }
+        });
+
+        for _ in 0..10 {
+            let mut conn = TcpStream::connect(laddr).await.unwrap();
+
+            conn.write_all(b"hello world").await.unwrap();
+            let mut buf = vec![0; 100];
+            let read_size = conn.read(&mut buf).await.unwrap();
+
+            assert_eq!(&buf[..read_size], b"hello world");
+        }
     }
 }

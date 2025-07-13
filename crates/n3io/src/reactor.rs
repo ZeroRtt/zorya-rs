@@ -1,4 +1,4 @@
-//! Reactor for mio sources.
+//! Reactor pattern based on mio.
 
 #[cfg(feature = "global_reactor")]
 use std::sync::OnceLock;

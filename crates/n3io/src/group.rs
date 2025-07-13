@@ -1,4 +1,4 @@
-//! Group a set of `io source`.
+//! Group a set of `IO` objects.
 
 use std::{
     io::Result,

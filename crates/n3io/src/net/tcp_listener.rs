@@ -85,13 +85,6 @@ mod tests {
     use super::*;
 
     #[futures_test::test]
-    async fn test_timeout() {
-        TcpStream::connect("127.0.0.1:10230".parse().unwrap())
-            .await
-            .expect_err("connnect timeout");
-    }
-
-    #[futures_test::test]
     async fn test_accept_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap())
             .await

@@ -6,3 +6,5 @@ pub mod group;
 pub mod net;
 pub mod reactor;
 pub mod timeout;
+/// reexport mio library.
+pub use mio;

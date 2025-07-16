@@ -1,0 +1,17 @@
+[package]
+description = "n3 task asynchronous task spawner facade."
+documentation = "https://docs.rs/n3-spawner"
+edition = "2024"
+license = "MIT"
+name = "n3-spawner"
+repository = "https://github.com/quic-lab/n3/crates/spawner"
+version = "0.1.0"
+
+[dependencies]
+futures = { version = "^0.3", optional = true }
+num_cpus = { version = "1.17.0", optional = true }
+
+[features]
+default = ["futures-executor-local"]
+futures-executor = ["futures/executor", "futures/thread-pool", "num_cpus"]
+futures-executor-local = ["futures/executor"]

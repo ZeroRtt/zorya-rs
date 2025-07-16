@@ -1,4 +1,4 @@
-use std::{future::poll_fn, ops::Deref};
+use std::future::poll_fn;
 #[cfg(feature = "global_reactor")]
 use std::{io::Result, net::SocketAddr};
 
@@ -17,15 +17,12 @@ pub struct TcpListener {
     reactor: Reactor,
 }
 
-impl Deref for TcpListener {
-    type Target = mio::net::TcpListener;
-
-    fn deref(&self) -> &Self::Target {
+impl TcpListener {
+    /// Returns the immutable reference to the inner mio socket.
+    pub fn mio_socket(&self) -> &mio::net::TcpListener {
         &self.mio_tcp_listener
     }
-}
 
-impl TcpListener {
     /// See [`bind_with`](Self::bind_with)
     #[cfg(feature = "global_reactor")]
     pub async fn bind(addr: SocketAddr) -> Result<Self> {
@@ -112,7 +109,7 @@ mod tests {
             .await
             .unwrap();
 
-        let laddr = listener.local_addr().unwrap();
+        let laddr = listener.mio_socket().local_addr().unwrap();
 
         spawner.spawn_ok(async move {
             while let Ok((conn, _)) = listener.accept().await {

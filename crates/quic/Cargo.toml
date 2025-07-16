@@ -1,0 +1,22 @@
+[package]
+description = "n3 asynchronous quic based on quiche libarary"
+documentation = "https://docs.rs/n3quic"
+edition = "2024"
+license = "MIT"
+name = "n3quic"
+repository = "https://github.com/quic-lab/n3/crates/quic"
+version = "0.1.1"
+
+[dependencies]
+quiche = { version = "^0.24" }
+boring = { version = "^4.17" }
+log = { version = "^0.4" }
+n3io = { path = "../n3io", version = "^0.1", default-features = false }
+futures = { version = "^0.3", features = ["executor", "thread-pool"] }
+dashmap = { version = "^6.1" }
+cooked-waker = { version = "5.0.0" }
+
+[features]
+default = ["global_reactor", "futures_thread_pool"]
+global_reactor = ["n3io/global_reactor"]
+futures_thread_pool = ["futures/thread-pool"]

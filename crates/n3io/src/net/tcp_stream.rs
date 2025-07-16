@@ -2,7 +2,6 @@ use std::{
     future::poll_fn,
     io::{ErrorKind, Read, Result, Write},
     net::SocketAddr,
-    ops::Deref,
 };
 
 use futures::{AsyncRead, AsyncWrite};
@@ -21,15 +20,12 @@ pub struct TcpStream {
     pub(super) reactor: Reactor,
 }
 
-impl Deref for TcpStream {
-    type Target = mio::net::TcpStream;
-
-    fn deref(&self) -> &Self::Target {
+impl TcpStream {
+    /// Returns the immutable reference to the inner mio socket.
+    pub fn mio_socket(&self) -> &mio::net::TcpStream {
         &self.mio_tcp_stream
     }
-}
 
-impl TcpStream {
     /// Create a new TCP stream and issue a non-blocking connect to the specified address.
     #[cfg(feature = "global_reactor")]
     pub async fn connect(addr: SocketAddr) -> Result<Self> {

@@ -1,5 +1,5 @@
 [package]
-description = "An asynchronous interface wrapper for mio library"
+description = "n3 asynchronous io library."
 documentation = "https://docs.rs/n3"
 edition = "2024"
 license = "MIT"

@@ -80,6 +80,10 @@ pub struct UdpGroup {
 }
 
 impl UdpGroup {
+    /// Returns a reference to the inner group object
+    pub fn group(&self) -> &Group {
+        &self.group
+    }
     /// See [`new_with`](Self::bind_with)
     #[cfg(feature = "global_reactor")]
     pub async fn bind<S: ToSocketAddrs>(addrs: S) -> Result<Self> {

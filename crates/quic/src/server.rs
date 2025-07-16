@@ -5,12 +5,15 @@ use std::{
     time::Duration,
 };
 
-use dashmap::DashMap;
-use futures::{StreamExt, channel::mpsc};
+use dashmap::{DashMap, DashSet};
+use futures::{SinkExt, StreamExt, channel::mpsc};
+use n3_spawner::spawn;
 use n3io::{mio::Token, net::UdpGroup, reactor::Reactor};
-use quiche::ConnectionId;
+use quiche::{ConnectionId, Header, RecvInfo};
 
-use crate::{AddressValidator, QuicConn, SimpleAddressValidator};
+use crate::{
+    AddressValidator, QuicConn, QuicConnDispatcher, QuicConnDispatcherExt, SimpleAddressValidator,
+};
 
 /// Server socket for quic.
 pub struct QuicListener(Token, mpsc::Receiver<QuicConn>);
@@ -42,7 +45,7 @@ pub struct QuicServerBuilder {
     /// quic server-side config.
     config: quiche::Config,
     /// validator for retry packet.
-    validator: Option<Box<dyn AddressValidator>>,
+    validator: Option<Box<dyn AddressValidator + Sync + Send>>,
     /// expiration interval for retry token.
     retry_token_timeout: Duration,
     /// The maximun unhandle incoming quic connection length.
@@ -75,7 +78,7 @@ impl QuicServerBuilder {
     /// Update validator provider.
     pub fn validator<V>(mut self, validator: V) -> Self
     where
-        V: AddressValidator + 'static,
+        V: AddressValidator + Sync + Send + 'static,
     {
         self.validator = Some(Box::new(validator));
         self
@@ -83,7 +86,7 @@ impl QuicServerBuilder {
 
     /// See [`bind_with`](Self::bind_with).
     #[cfg(feature = "global_reactor")]
-    pub async fn bind<S>(self, laddrs: S) -> Result<(QuicServer, QuicListener)>
+    pub async fn bind<S>(self, laddrs: S) -> Result<QuicListener>
     where
         S: ToSocketAddrs,
     {
@@ -93,11 +96,7 @@ impl QuicServerBuilder {
     }
 
     /// Bind a new QUIC listener to the specified address to receive new connections.
-    pub async fn bind_with<S>(
-        self,
-        laddrs: S,
-        reactor: Reactor,
-    ) -> Result<(QuicServer, QuicListener)>
+    pub async fn bind_with<S>(self, laddrs: S, reactor: Reactor) -> Result<QuicListener>
     where
         S: ToSocketAddrs,
     {
@@ -111,16 +110,24 @@ impl QuicServerBuilder {
 
         let group_token = udp_group.group().group_token;
 
-        Ok((
-            QuicServer {
-                udp_group,
-                config: self.config,
-                validator,
-                incoming_sender,
-                quic_stream_set: Default::default(),
-            },
-            QuicListener(group_token, incoming_receiver),
-        ))
+        let server = QuicServer {
+            udp_group,
+            config: self.config,
+            validator,
+            incoming_sender,
+            quiche_conn_set: Default::default(),
+            handshaking_conn_set: Default::default(),
+        };
+
+        spawn(async move {
+            if let Err(err) = server.run().await {
+                log::error!("listener({:?}) stopped with error: {}", group_token, err);
+            } else {
+                log::info!("listener({:?}) stopped.", group_token,);
+            }
+        })?;
+
+        Ok(QuicListener(group_token, incoming_receiver))
     }
 }
 
@@ -132,9 +139,76 @@ pub struct QuicServer {
     /// quic server-side config.
     config: quiche::Config,
     /// validator for retry packet.
-    validator: Box<dyn AddressValidator>,
+    validator: Box<dyn AddressValidator + Sync + Send>,
     /// incoming connection sender.
     incoming_sender: mpsc::Sender<QuicConn>,
+    /// handshaking connections.
+    handshaking_conn_set: DashSet<ConnectionId<'static>>,
     /// aliving quic streams.
-    quic_stream_set: DashMap<ConnectionId<'static>, QuicConn>,
+    quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>>,
+}
+
+impl QuicServer {
+    /// run udp recv loop
+    async fn run(mut self) -> Result<()> {
+        let mut buf = vec![0; 65527];
+        loop {
+            let (read_size, from, to) = self.udp_group.recv(&mut buf).await?;
+
+            let buf = &mut buf[..read_size];
+
+            let recv_info = RecvInfo { from, to };
+
+            let header =
+                quiche::Header::from_slice(buf, quiche::MAX_CONN_ID_LEN).map_err(Error::other)?;
+
+            match header.ty {
+                quiche::Type::Initial => {
+                    self.initial(header, buf, recv_info).await;
+                }
+                quiche::Type::Short => {
+                    self.dispatch(header.dcid, buf, recv_info).await?;
+                }
+                _ => {
+                    log::error!("QuicServer(run) recv unsupport packet, ty={:?}", header.ty);
+                }
+            }
+        }
+    }
+
+    #[allow(unused)]
+    async fn initial(&self, header: Header<'_>, buf: &mut [u8], recv_info: RecvInfo) {
+        todo!()
+    }
+
+    async fn dispatch(
+        &mut self,
+        conn_id: ConnectionId<'static>,
+        buf: &mut [u8],
+        recv_info: RecvInfo,
+    ) -> Result<()> {
+        log::trace!("Dispatch(run) packet, id={:?}", conn_id);
+
+        if let Some(dispatcher) = self.quiche_conn_set.get(&conn_id).map(|conn| conn.clone()) {
+            if let Err(err) = dispatcher.recv(buf, recv_info).await {
+                log::error!(
+                    "Failed to dispatch received packet, id={:?}, err={}",
+                    conn_id,
+                    err
+                );
+            }
+
+            if self.handshaking_conn_set.contains(&conn_id) {
+                if dispatcher.is_established() {
+                    self.handshaking_conn_set.remove(&conn_id);
+                    self.incoming_sender
+                        .send(QuicConn(dispatcher.0.clone()))
+                        .await
+                        .map_err(Error::other)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

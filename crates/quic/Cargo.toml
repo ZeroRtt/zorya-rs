@@ -12,11 +12,13 @@ quiche = { version = "^0.24" }
 boring = { version = "^4.17" }
 log = { version = "^0.4" }
 n3io = { path = "../n3io", version = "^0.1", default-features = false }
+n3-spawner = { path = "../spawner", version = "^0.1", default-features = false, optional = true }
+
 futures = { version = "^0.3", features = ["executor", "thread-pool"] }
 dashmap = { version = "^6.1" }
 cooked-waker = { version = "5.0.0" }
 
 [features]
-default = ["global_reactor", "futures_thread_pool"]
+default = ["global_reactor", "futures-executor"]
 global_reactor = ["n3io/global_reactor"]
-futures_thread_pool = ["futures/thread-pool"]
+futures-executor = ["n3-spawner/futures-executor"]

@@ -10,7 +10,7 @@ use futures::{AsyncRead, AsyncWrite};
 use n3io::{mio::Token, reactor::Reactor};
 use quiche::{RecvInfo, SendInfo};
 
-struct QuicConnState {
+pub(crate) struct QuicConnState {
     /// reactor for IOs.
     reactor: Reactor,
     /// underlying quiche connection object.
@@ -47,9 +47,13 @@ fn is_bidi(stream_id: u64) -> bool {
 
 /// Quic connection api.
 #[derive(Clone)]
-pub struct QuicConnDispatcher(Arc<Mutex<QuicConnState>>);
+pub struct QuicConnDispatcher(pub(crate) Arc<Mutex<QuicConnState>>);
 
 impl QuicConnDispatcher {
+    /// Return true if the connection handshake is complete.
+    pub(crate) fn is_established(&self) -> bool {
+        self.0.lock().unwrap().quiche_conn.is_established()
+    }
     /// Writes a single QUIC packet to be sent to the peer.
     ///
     /// This func transfer error [`quiche::Error::Done`] to [`Poll::Pending`]
@@ -286,7 +290,7 @@ impl<'a> Future for ConnSend<'a> {
 }
 
 /// Quic connection api.
-pub struct QuicConn(Arc<Mutex<QuicConnState>>);
+pub struct QuicConn(pub(crate) Arc<Mutex<QuicConnState>>);
 
 impl Drop for QuicConn {
     fn drop(&mut self) {

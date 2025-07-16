@@ -557,6 +557,7 @@ dependencies = [
  "dashmap",
  "futures",
  "log",
+ "n3-spawner",
  "n3io",
  "quiche",
 ]

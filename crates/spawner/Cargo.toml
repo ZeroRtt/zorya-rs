@@ -12,6 +12,5 @@ futures = { version = "^0.3", optional = true }
 num_cpus = { version = "1.17.0", optional = true }
 
 [features]
-default = ["futures-executor-local"]
 futures-executor = ["futures/executor", "futures/thread-pool", "num_cpus"]
 futures-executor-local = ["futures/executor"]

@@ -3,6 +3,7 @@
 #[cfg(feature = "global_reactor")]
 use std::sync::OnceLock;
 use std::{
+    collections::VecDeque,
     fmt::Debug,
     io::{Error, ErrorKind, Result},
     sync::{
@@ -18,12 +19,12 @@ use dashmap::DashMap;
 use mio::{Events, Interest, Registry, Token, event::Source};
 use timing_wheel::TimeWheel;
 
+#[derive(Debug)]
 enum IoState {
     Timeout,
     Deadline(Instant),
     Timer(u64, Waker),
     Waker(Waker),
-    GroupReady(Vec<Token>),
     None,
 }
 
@@ -41,7 +42,9 @@ struct ReactorImpl {
     /// stats for io writting ops.
     io_writable_stats: DashMap<Token, IoState>,
     /// mapping io_token => group_io_token.
-    group_io_mapping: DashMap<Token, Token>,
+    group_children: DashMap<Token, Token>,
+    /// Group token set.
+    group_token_set: DashMap<Token, VecDeque<Token>>,
     /// timing-wheel
     timing_wheel: Mutex<TimeWheel<(Token, bool)>>,
     /// mio registry.
@@ -54,7 +57,8 @@ impl ReactorImpl {
             token_gen: Default::default(),
             io_readable_stats: Default::default(),
             io_writable_stats: Default::default(),
-            group_io_mapping: Default::default(),
+            group_children: Default::default(),
+            group_token_set: Default::default(),
             timing_wheel: Mutex::new(TimeWheel::new(tick_interval)),
             registry,
         }
@@ -156,15 +160,15 @@ impl Reactor {
             for event in events.iter() {
                 let token = event.token();
 
-                let (token, is_group) =
-                    if let Some(group_token) = self.0.group_io_mapping.get(&token) {
-                        (*group_token, true)
-                    } else {
-                        (token, false)
-                    };
+                let (token, is_group) = if let Some(group_token) = self.0.group_children.get(&token)
+                {
+                    (*group_token, true)
+                } else {
+                    (token, false)
+                };
 
                 log::trace!(
-                    "poll token={:?}, is_group={}, origin_token={:?}, readable={}, writable={}",
+                    "Reactor(background) rasied event, token={:?}, is_group={}, origin_token={:?}, readable={}, writable={}",
                     token,
                     is_group,
                     event.token(),
@@ -177,16 +181,20 @@ impl Reactor {
                         match std::mem::take(&mut *v) {
                             IoState::Waker(waker) | IoState::Timer(_, waker) => {
                                 wakers.push(waker);
-                                if is_group {
-                                    *v = IoState::GroupReady(vec![event.token()]);
-                                }
-                            }
-                            IoState::GroupReady(mut tokens) => {
-                                assert!(is_group);
-                                tokens.push(event.token());
-                                *v = IoState::GroupReady(tokens);
                             }
                             _ => {}
+                        }
+
+                        if is_group {
+                            if let Some(mut ready_queue) = self.0.group_token_set.get_mut(&token) {
+                                log::trace!(
+                                    "Reactor(background) append ready events to group, group={:?}, token={:?}, interest=Readable",
+                                    token,
+                                    event.token(),
+                                );
+
+                                ready_queue.push_back(event.token());
+                            }
                         }
                     }
                 }
@@ -196,17 +204,20 @@ impl Reactor {
                         match std::mem::take(&mut *v) {
                             IoState::Waker(waker) => {
                                 wakers.push(waker);
-
-                                if is_group {
-                                    *v = IoState::GroupReady(vec![event.token()]);
-                                }
-                            }
-                            IoState::GroupReady(mut tokens) => {
-                                assert!(is_group);
-                                tokens.push(event.token());
-                                *v = IoState::GroupReady(tokens);
                             }
                             _ => {}
+                        }
+
+                        if is_group {
+                            if let Some(mut ready_queue) = self.0.group_token_set.get_mut(&token) {
+                                log::trace!(
+                                    "Reactor(background) append ready events to group, group={:?}, token={:?}, interest=Writable",
+                                    token,
+                                    event.token(),
+                                );
+
+                                ready_queue.push_back(event.token());
+                            }
                         }
                     }
                 }
@@ -342,109 +353,113 @@ impl Reactor {
         mut io_f: F,
     ) -> Poll<Result<T>>
     where
-        F: FnMut(Option<Token>) -> Result<T>,
+        F: FnMut(Token) -> Result<T>,
     {
-        let (wakers, is_read) = if interest.is_readable() {
+        let (stats, is_read) = if interest.is_readable() {
             (&self.0.io_readable_stats, true)
         } else {
             (&self.0.io_writable_stats, false)
         };
 
-        // When calling the `get_mut` method with the same key value at the same time, the later calls will be blocked.
-        if let Some(mut op) = wakers.get_mut(&io) {
-            loop {
-                let mut wake_from = None;
-                match std::mem::take(&mut *op) {
-                    IoState::Timeout => {
-                        return Poll::Ready(Err(Error::new(
-                            ErrorKind::TimedOut,
-                            format!("io({:?},{:?}) timeout.", io, interest),
-                        )));
-                    }
-                    IoState::Timer(timer, waker) => {
-                        // re-assign stat.
-                        *op = IoState::Timer(timer, waker);
-                    }
-                    IoState::GroupReady(mut tokens) => {
-                        if let Some(token) = tokens.pop() {
-                            wake_from = Some(token);
-                        }
+        log::trace!("Reactor(poll_io): poll resource, token={:?}", io,);
 
-                        if tokens.is_empty() {
-                            *op = IoState::None;
-                        } else {
-                            *op = IoState::GroupReady(tokens);
+        if let Some(mut stat) = stats.get_mut(&io) {
+            if let Some(mut ready_queue) = self.0.group_token_set.get_mut(&io) {
+                log::trace!(
+                    "Reactor(poll_io): poll group resource, token={:?}, readiness={}",
+                    io,
+                    ready_queue.len()
+                );
+
+                assert_eq!(deadline, None, "Call `poll_io` on group with `deadline`.");
+
+                while let Some(next) = ready_queue.pop_front() {
+                    match io_f(next) {
+                        Ok(r) => return Poll::Ready(Ok(r)),
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                            continue;
                         }
+                        Err(err) => return Poll::Ready(Err(err)),
                     }
-                    IoState::Deadline(_) => {
-                        unreachable!("call `poll_io` on `deadline`");
-                    }
-                    _ => {}
                 }
 
-                match io_f(wake_from) {
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        if let Some(deadline) = deadline {
-                            match &*op {
-                                // has pending readiness.
-                                IoState::GroupReady(_) => {
-                                    continue;
-                                }
-                                // update waker.
-                                IoState::Timer(timer, _) => {
-                                    *op = IoState::Timer(*timer, cx.waker().clone());
-                                }
-                                IoState::None => {
-                                    match self
-                                        .0
-                                        .timing_wheel
-                                        .lock()
-                                        .unwrap()
-                                        .deadline(deadline, (io, is_read))
-                                    {
-                                        Some(timer) => {
-                                            *op = IoState::Timer(timer, cx.waker().clone());
-                                        }
-                                        None => {
-                                            return Poll::Ready(Err(Error::new(
-                                                ErrorKind::TimedOut,
-                                                format!("io({:?},{:?}) timeout.", io, interest),
-                                            )));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    unreachable!("poll_io with deadline in invalid state.");
-                                }
-                            }
-                        } else {
-                            *op = IoState::Waker(cx.waker().clone());
-                            log::trace!("register waker, token={:?}, wait_read_op={}", io, is_read);
-                        }
+                log::trace!(
+                    "Reactor(poll_io): poll group resource, token={:?}, pending",
+                    io,
+                );
 
+                *stat = IoState::Waker(cx.waker().clone());
+                return Poll::Pending;
+            }
+
+            match std::mem::take(&mut *stat) {
+                IoState::Timeout => {
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::TimedOut,
+                        format!("Reactor(poll_io): io timeout, token={:?}", io),
+                    )));
+                }
+                IoState::Timer(timer, waker) => match io_f(io) {
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        *stat = IoState::Timer(timer, waker);
                         return Poll::Pending;
                     }
                     r => return Poll::Ready(r),
+                },
+                // may wakeup by timer.
+                IoState::Waker(_) | IoState::None => match io_f(io) {
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        if let Some(deadline) = deadline {
+                            match self
+                                .0
+                                .timing_wheel
+                                .lock()
+                                .unwrap()
+                                .deadline(deadline, (io, is_read))
+                            {
+                                Some(v) => {
+                                    *stat = IoState::Timer(v, cx.waker().clone());
+                                    return Poll::Pending;
+                                }
+                                None => {
+                                    return Poll::Ready(Err(Error::new(
+                                        ErrorKind::TimedOut,
+                                        format!("Reactor(poll_io): io timeout, token={:?}", io),
+                                    )));
+                                }
+                            }
+                        }
+
+                        *stat = IoState::Waker(cx.waker().clone());
+                        return Poll::Pending;
+                    }
+                    r => return Poll::Ready(r),
+                },
+                stat => {
+                    unreachable!("Reactor(poll_io): unhandle state, state={:?}", stat);
                 }
             }
-        } else {
-            Poll::Ready(Err(Error::new(
-                ErrorKind::NotFound,
-                format!("The io resource({:?}) is not found.", io),
-            )))
         }
+
+        log::error!("Reactor(poll_io): resource is not found, token={:?}", io);
+
+        return Poll::Ready(Err(Error::new(
+            ErrorKind::NotFound,
+            format!("poll_io: resource is not found"),
+        )));
     }
 
     /// Group a set of tokens.
     pub fn group<'a, G: IntoIterator<Item = &'a Token>>(&self, tokens: G) -> Result<Token> {
         let group_token = self.0.next_token(Interest::READABLE);
 
+        self.0
+            .group_token_set
+            .insert(group_token, Default::default());
+
         for token in tokens.into_iter() {
             assert!(
-                self.0
-                    .group_io_mapping
-                    .insert(*token, group_token)
-                    .is_none(),
+                self.0.group_children.insert(*token, group_token).is_none(),
                 "token({:?}) group by twice.",
                 token
             );
@@ -462,9 +477,11 @@ impl Reactor {
         self.0.io_readable_stats.remove(&group);
         self.0.io_writable_stats.remove(&group);
 
+        self.0.group_token_set.remove(&group);
+
         for token in tokens.into_iter() {
             assert!(
-                self.0.group_io_mapping.remove(token).is_some(),
+                self.0.group_children.remove(token).is_some(),
                 "token({:?}) is not group({:?}).",
                 token,
                 group

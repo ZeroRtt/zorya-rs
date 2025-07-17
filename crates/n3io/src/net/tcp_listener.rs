@@ -85,6 +85,7 @@ mod tests {
 
     #[futures_test::test]
     async fn test_accept_timeout() {
+        // _ = pretty_env_logger::try_init_timed();
         let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();

@@ -47,7 +47,7 @@ impl Group {
         io_f: F,
     ) -> Poll<Result<T>>
     where
-        F: FnMut(Option<Token>) -> Result<T>,
+        F: FnMut(Token) -> Result<T>,
     {
         self.reactor
             .poll_io(cx, self.group_token, interest, deadline, io_f)

@@ -162,47 +162,22 @@ impl UdpGroup {
     pub async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr)> {
         poll_fn(|cx| {
             self.group.poll_io(cx, Interest::READABLE, None, |token| {
-                // poll specific socket
-                if let Some(token) = token {
-                    log::trace!(
-                        "call recv_from, readiness=true, group={:?}, socket={:?}",
-                        self.group.group_token,
-                        token
-                    );
+                log::trace!(
+                    "call recv_from, readiness=true, group={:?}, socket={:?}",
+                    self.group.group_token,
+                    token
+                );
 
-                    let socket = self
-                        .mio_udp_sockets
-                        .get(&token)
-                        .expect("group returns invalid token.");
+                let socket = self
+                    .mio_udp_sockets
+                    .get(&token)
+                    .expect("group returns invalid token.");
 
-                    let laddr = socket.local_addr()?;
+                let laddr = socket.local_addr()?;
 
-                    return socket
-                        .recv_from(buf)
-                        .map(|(read_size, from)| (read_size, from, laddr));
-                }
-
-                // poll all sockets
-                for (token, socket) in &self.mio_udp_sockets {
-                    log::trace!(
-                        "call recv_from, readiness=false, group={:?}, socket={:?}",
-                        self.group.group_token,
-                        token
-                    );
-
-                    let to = socket.local_addr()?;
-
-                    match socket.recv_from(buf) {
-                        Ok((read_size, from)) => return Ok((read_size, from, to)),
-                        Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                        Err(err) => return Err(err),
-                    }
-                }
-
-                Err(Error::new(
-                    ErrorKind::WouldBlock,
-                    format!("group({:?}) would_block.", self.group.group_token),
-                ))
+                return socket
+                    .recv_from(buf)
+                    .map(|(read_size, from)| (read_size, from, laddr));
             })
         })
         .await

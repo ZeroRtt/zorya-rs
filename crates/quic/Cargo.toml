@@ -18,6 +18,10 @@ futures = { version = "^0.3", features = ["executor", "thread-pool"] }
 dashmap = { version = "^6.1" }
 cooked-waker = { version = "5.0.0" }
 
+[dev-dependencies]
+futures-test = "^0.3"
+pretty_env_logger = "0.5.0"
+
 [features]
 default = ["global_reactor", "futures-executor"]
 global_reactor = ["n3io/global_reactor"]

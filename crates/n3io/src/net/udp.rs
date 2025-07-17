@@ -21,6 +21,10 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
+    /// Returns the immutable reference to the inner mio socket.
+    pub fn mio_socket(&self) -> &mio::net::UdpSocket {
+        &self.mio_udp_socket
+    }
     /// See [`new_with`](Self::bind_with)
     #[cfg(feature = "global_reactor")]
     pub async fn bind(addr: SocketAddr) -> Result<Self> {
@@ -89,6 +93,12 @@ impl UdpGroup {
     pub fn reactor(&self) -> &Reactor {
         &self.group.reactor
     }
+
+    /// Returns A iterator over local bound addresses.
+    pub fn laddrs(&self) -> impl Iterator<Item = &SocketAddr> {
+        self.sockaddrs.keys()
+    }
+
     /// See [`new_with`](Self::bind_with)
     #[cfg(feature = "global_reactor")]
     pub async fn bind<S: ToSocketAddrs>(addrs: S) -> Result<Self> {
@@ -173,21 +183,21 @@ impl UdpGroup {
                 }
 
                 // poll all sockets
-                // for (token, socket) in &self.mio_udp_sockets {
-                //     log::trace!(
-                //         "call recv_from, readiness=false, group={:?}, socket={:?}",
-                //         self.group.group_token,
-                //         token
-                //     );
+                for (token, socket) in &self.mio_udp_sockets {
+                    log::trace!(
+                        "call recv_from, readiness=false, group={:?}, socket={:?}",
+                        self.group.group_token,
+                        token
+                    );
 
-                //     let to = socket.local_addr()?;
+                    let to = socket.local_addr()?;
 
-                //     match socket.recv_from(buf) {
-                //         Ok((read_size, from)) => return Ok((read_size, from, to)),
-                //         Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                //         Err(err) => return Err(err),
-                //     }
-                // }
+                    match socket.recv_from(buf) {
+                        Ok((read_size, from)) => return Ok((read_size, from, to)),
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                        Err(err) => return Err(err),
+                    }
+                }
 
                 Err(Error::new(
                     ErrorKind::WouldBlock,

@@ -1,6 +1,6 @@
 use std::{
     io::{Error, ErrorKind, Result},
-    net::ToSocketAddrs,
+    net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
     time::Duration,
 };
@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// Server socket for quic.
-pub struct QuicListener(Token, mpsc::Receiver<QuicConn>);
+pub struct QuicListener(Token, mpsc::Receiver<QuicConn>, Vec<SocketAddr>);
 
 impl Drop for QuicListener {
     fn drop(&mut self) {
@@ -26,6 +26,10 @@ impl Drop for QuicListener {
 }
 
 impl QuicListener {
+    /// Returns A iterator over local bound addresses.
+    pub fn local_addrs(&self) -> impl Iterator<Item = &SocketAddr> {
+        self.2.iter()
+    }
     /// Start a quic server socket building process.
     pub fn build(config: quiche::Config) -> QuicServerBuilder {
         QuicServerBuilder {
@@ -103,6 +107,8 @@ impl QuicServerBuilder {
     {
         let udp_group = Arc::new(UdpGroup::bind_with(laddrs, reactor).await?);
 
+        let laddrs = udp_group.local_addrs().copied().collect::<_>();
+
         let validator = self
             .validator
             .unwrap_or_else(|| Box::new(SimpleAddressValidator::new(self.retry_token_timeout)));
@@ -128,7 +134,7 @@ impl QuicServerBuilder {
             }
         })?;
 
-        Ok(QuicListener(group_token, incoming_receiver))
+        Ok(QuicListener(group_token, incoming_receiver, laddrs))
     }
 }
 
@@ -149,32 +155,6 @@ struct QuicServer {
 }
 
 impl QuicServer {
-    /// run udp recv loop
-    async fn run(mut self) -> Result<()> {
-        let mut buf = vec![0; 65527];
-        loop {
-            let (read_size, from, to) = self.udp_group.recv(&mut buf).await?;
-
-            let recv_info = RecvInfo { from, to };
-
-            let header = quiche::Header::from_slice(&mut buf[..read_size], quiche::MAX_CONN_ID_LEN)
-                .map_err(Error::other)?;
-
-            match header.ty {
-                quiche::Type::Initial => {
-                    self.initial(header, &mut buf, read_size, recv_info).await?;
-                }
-                quiche::Type::Short => {
-                    self.dispatch(header.dcid, &mut buf[..read_size], recv_info)
-                        .await?;
-                }
-                _ => {
-                    log::error!("QuicServer(run) recv unsupport packet, ty={:?}", header.ty);
-                }
-            }
-        }
-    }
-
     async fn initial(
         &mut self,
         header: Header<'_>,
@@ -221,7 +201,17 @@ impl QuicServer {
             recv_info.from,
             &mut self.config,
         ) {
-            Ok(conn) => conn,
+            Ok(conn) => {
+                log::info!(
+                    "QuicServer(initial) accept new conn, from={:?}, to={}, scid={:?}, dcid={:?}, odcid={:?}",
+                    recv_info.from,
+                    recv_info.to,
+                    header.scid,
+                    header.dcid,
+                    odcid
+                );
+                conn
+            }
             Err(err) => {
                 log::error!(
                     "failed to accept connection, from={:?}, to={}, scid={:?}, dcid={:?}, err={}",
@@ -251,6 +241,22 @@ impl QuicServer {
         if !quiche_conn.is_established() {
             self.handshaking_conn_set
                 .insert(header.dcid.clone().into_owned());
+
+            log::info!(
+                "QuicServer(initial) wait handshaking, from={:?}, to={}, scid={:?}, dcid={:?}",
+                recv_info.from,
+                recv_info.to,
+                header.scid,
+                header.dcid,
+            );
+        } else {
+            log::info!(
+                "QuicServer(initial) established, from={:?}, to={}, scid={:?}, dcid={:?}",
+                recv_info.from,
+                recv_info.to,
+                header.scid,
+                header.dcid,
+            );
         }
 
         let max_send_udp_payload_size = quiche_conn.max_send_udp_payload_size();
@@ -292,6 +298,14 @@ impl QuicServer {
 
         loop {
             let (send_size, send_info) = dispatcher.send(&mut buf).await?;
+
+            log::trace!(
+                "QuicServer(send_loop) send data {}, from={}, to={}",
+                send_size,
+                send_info.from,
+                send_info.to
+            );
+
             udp_group
                 .send(&buf[..send_size], send_info.from, send_info.to)
                 .await?;
@@ -299,15 +313,16 @@ impl QuicServer {
     }
 
     async fn retry(&self, header: Header<'_>, buf: &mut [u8], recv_info: RecvInfo) -> Result<()> {
+        let new_scid = random_conn_id();
+
         log::trace!(
-            "retry, from={:?}, to={}, scid={:?}, dcid={:?}",
+            "retry, from={:?}, to={}, scid={:?}, dcid={:?}, new_scid={:?}",
             recv_info.from,
             recv_info.to,
             header.scid,
-            header.dcid
+            header.dcid,
+            new_scid
         );
-
-        let new_scid = random_conn_id();
 
         let token = self.validator.mint_retry_token(
             &header.scid,
@@ -379,34 +394,72 @@ impl QuicServer {
             .map(|_| ())
     }
 
-    async fn dispatch(
-        &mut self,
-        conn_id: ConnectionId<'static>,
-        buf: &mut [u8],
-        recv_info: RecvInfo,
-    ) -> Result<()> {
-        log::trace!("Dispatch(run) packet, id={:?}", conn_id);
+    /// run udp recv loop
+    async fn run(mut self) -> Result<()> {
+        let mut buf = vec![0; 65527];
+        loop {
+            let (read_size, from, to) = self.udp_group.recv(&mut buf).await?;
 
-        if let Some(dispatcher) = self.quiche_conn_set.get(&conn_id).map(|conn| conn.clone()) {
-            if let Err(err) = dispatcher.recv(buf, recv_info).await {
-                log::error!(
-                    "Failed to dispatch received packet, id={:?}, err={}",
-                    conn_id,
-                    err
-                );
-            }
+            let recv_info = RecvInfo { from, to };
 
-            if self.handshaking_conn_set.contains(&conn_id) {
-                if dispatcher.is_established() {
-                    self.handshaking_conn_set.remove(&conn_id);
-                    self.incoming_sender
-                        .send(QuicConn(dispatcher.0.clone()))
-                        .await
-                        .map_err(Error::other)?;
+            let header = quiche::Header::from_slice(&mut buf[..read_size], quiche::MAX_CONN_ID_LEN)
+                .map_err(Error::other)?;
+
+            log::trace!(
+                "QuicServer(run) dispatch, scid={:?}, dcid={:?}, from={}, to={}, len={}",
+                header.scid,
+                header.dcid,
+                recv_info.from,
+                recv_info.to,
+                read_size
+            );
+
+            if let Some(dispatcher) = self
+                .quiche_conn_set
+                .get(&header.dcid)
+                .map(|conn| conn.clone())
+            {
+                if let Err(err) = dispatcher.recv(&mut buf[..read_size], recv_info).await {
+                    log::error!(
+                        "Failed to dispatch received packet, trace_id={:?}, err={}",
+                        header.dcid,
+                        err
+                    );
+                }
+
+                if self.handshaking_conn_set.contains(&header.dcid) {
+                    if dispatcher.is_established() {
+                        log::info!(
+                            "QuicServer(dispatch) established, trace_id={:?}, from={}, to={}",
+                            header.dcid,
+                            recv_info.from,
+                            recv_info.to
+                        );
+
+                        self.handshaking_conn_set.remove(&header.dcid);
+                        self.incoming_sender
+                            .send(QuicConn(dispatcher.0.clone()))
+                            .await
+                            .map_err(Error::other)?;
+                    }
+                }
+            } else {
+                match header.ty {
+                    quiche::Type::Initial => {
+                        self.initial(header, &mut buf, read_size, recv_info).await?;
+                    }
+                    _ => {
+                        log::error!(
+                            "QuicServer(run) recv unsupport packet, scid={:?}, dcid={:?}, from={}, to={}, ty={:?}, ",
+                            header.scid,
+                            header.dcid,
+                            recv_info.from,
+                            recv_info.to,
+                            header.ty
+                        );
+                    }
                 }
             }
         }
-
-        Ok(())
     }
 }

@@ -344,13 +344,6 @@ impl Reactor {
     where
         F: FnMut(Option<Token>) -> Result<T>,
     {
-        log::trace!(
-            "poll_io token={:?}, interest={:?}, deadline={:?}",
-            io,
-            interest,
-            deadline
-        );
-
         let (wakers, is_read) = if interest.is_readable() {
             (&self.0.io_readable_stats, true)
         } else {

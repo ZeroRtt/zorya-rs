@@ -14,7 +14,7 @@ pub(crate) struct QuicConnState {
     /// reactor for IOs.
     reactor: Reactor,
     /// underlying quiche connection object.
-    quiche_conn: quiche::Connection,
+    pub(crate) quiche_conn: quiche::Connection,
     /// generator for outbound bidirectional stream id.
     outbound_bidi_stream_id_next: u64,
     /// The biggest inbound stream ID currently seen.
@@ -197,7 +197,7 @@ impl QuicConnDispatcher {
 
         while let Some(Reverse(id)) = ordering_readable_id_set.pop() {
             if is_bidi(id)
-                && is_local(id, state.quiche_conn.is_server())
+                && !is_local(id, state.quiche_conn.is_server())
                 && state.inbound_stream_id_current < id
             {
                 state.inbound_stream_id_current = id;
@@ -242,8 +242,8 @@ impl QuicConnDispatcher {
             }
         }
 
-        if let Some(waker) = state.open_stream_waker.take() {
-            if state.quiche_conn.peer_streams_left_bidi() > 0 {
+        if state.quiche_conn.peer_streams_left_bidi() > 0 {
+            if let Some(waker) = state.open_stream_waker.take() {
                 log::trace!(
                     "Wakeup open stream, trace_id={}",
                     state.quiche_conn.trace_id()
@@ -560,6 +560,16 @@ impl AsyncWrite for QuicStream {
 }
 
 impl AsyncRead for &QuicStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize>> {
+        self.poll_stream_read(cx, buf).map_ok(|(len, _)| len)
+    }
+}
+
+impl AsyncRead for QuicStream {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,

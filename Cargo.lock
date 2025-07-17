@@ -556,9 +556,11 @@ dependencies = [
  "cooked-waker",
  "dashmap",
  "futures",
+ "futures-test",
  "log",
  "n3-spawner",
  "n3io",
+ "pretty_env_logger",
  "quiche",
 ]
 

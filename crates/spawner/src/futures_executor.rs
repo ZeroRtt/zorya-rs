@@ -8,6 +8,7 @@ use futures::{executor::ThreadPool, task::SpawnExt};
 static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 /// Spawns a task that polls the given future with output () to completion.
+#[must_use]
 pub fn spawn<Fut>(future: Fut) -> Result<()>
 where
     Fut: Future<Output = ()> + Send + 'static,

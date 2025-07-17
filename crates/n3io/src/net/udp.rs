@@ -99,6 +99,7 @@ pub mod udp_group {
             self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
+            // Safety: Tasks managed by `FuturesUnordered` are polled sequentially.
             let buf = unsafe { &mut *(&mut *self.buf.get()).assume_init() };
 
             self.socket
@@ -191,7 +192,9 @@ pub mod udp_group {
     impl UdpGroupReceiver {
         /// Receives data from the group.
         pub async fn recv(&mut self, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr)> {
-            // Safety: FuturesUnordered will not call poll on the submitted future
+            // Safety:
+            // - `FuturesUnordered` will not call poll on the submitted future until `FuturesUnordered::poll_next` is called.
+            // - The receiver of this func is `&mut self`, thus only one caller can access this func at the same time.
             unsafe { (&mut *self.0.get()).write(buf as *mut [u8]) };
 
             while let Some((recv_from, read_size, from)) = self.1.try_next().await? {

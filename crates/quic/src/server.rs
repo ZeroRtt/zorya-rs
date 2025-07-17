@@ -398,6 +398,7 @@ impl QuicServer {
     /// run udp recv loop
     async fn run(mut self) -> Result<()> {
         let mut buf = vec![0; 65527];
+
         loop {
             let (read_size, from, to) = self.udp_group_receiver.recv(&mut buf).await?;
 

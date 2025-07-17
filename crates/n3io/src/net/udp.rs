@@ -77,35 +77,42 @@ impl UdpSocket {
 /// A group of udp sockets.
 pub mod udp_group {
 
+    use std::{cell::UnsafeCell, mem::MaybeUninit};
+
     use futures::TryStreamExt;
 
     use super::*;
 
     struct UdpGroupRecvFrom {
         addr: SocketAddr,
-        buf: Vec<u8>,
+        buf: Arc<UnsafeCell<MaybeUninit<*mut [u8]>>>,
         socket: Arc<UdpSocket>,
     }
+
+    unsafe impl Send for UdpGroupRecvFrom {}
+    unsafe impl Sync for UdpGroupRecvFrom {}
 
     impl Future for UdpGroupRecvFrom {
         type Output = Result<(Self, usize, SocketAddr)>;
 
         fn poll(
-            mut self: std::pin::Pin<&mut Self>,
+            self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
+            let buf = unsafe { &mut *(&mut *self.buf.get()).assume_init() };
+
             self.socket
                 .reactor
                 .clone()
                 .poll_io(cx, self.socket.token, Interest::READABLE, None, |_| {
-                    self.socket.clone().mio_udp_socket.recv_from(&mut self.buf)
+                    self.socket.clone().mio_udp_socket.recv_from(buf)
                 })
                 .map_ok(|(read_size, from)| {
                     (
                         Self {
                             addr: self.addr,
                             socket: self.socket.clone(),
-                            buf: std::mem::take(&mut self.buf),
+                            buf: self.buf.clone(),
                         },
                         read_size,
                         from,
@@ -117,7 +124,7 @@ pub mod udp_group {
     /// Create a udp socket group.
     pub async fn bind_with<S>(
         laddrs: S,
-        max_recv_buf: usize,
+        _max_recv_buf: usize,
         reactor: Reactor,
     ) -> Result<(UdpGroupSender, UdpGroupReceiver)>
     where
@@ -126,6 +133,8 @@ pub mod udp_group {
         let mut sockets = HashMap::new();
 
         let map = FuturesUnordered::new();
+
+        let buf = Arc::new(UnsafeCell::new(MaybeUninit::uninit()));
 
         for laddr in laddrs.to_socket_addrs()? {
             let socket = Arc::new(UdpSocket::bind_with(laddr, reactor.clone()).await?);
@@ -136,11 +145,14 @@ pub mod udp_group {
             map.push(UdpGroupRecvFrom {
                 addr: laddr,
                 socket,
-                buf: vec![0; max_recv_buf],
+                buf: buf.clone(),
             });
         }
 
-        Ok((UdpGroupSender(Arc::new(sockets)), UdpGroupReceiver(map)))
+        Ok((
+            UdpGroupSender(Arc::new(sockets)),
+            UdpGroupReceiver(buf, map),
+        ))
     }
 
     /// A sender send data via a udp group;
@@ -168,19 +180,26 @@ pub mod udp_group {
     }
 
     /// A receiver recieve data from socket group.
-    pub struct UdpGroupReceiver(FuturesUnordered<UdpGroupRecvFrom>);
+    pub struct UdpGroupReceiver(
+        Arc<UnsafeCell<MaybeUninit<*mut [u8]>>>,
+        FuturesUnordered<UdpGroupRecvFrom>,
+    );
+
+    unsafe impl Send for UdpGroupReceiver {}
+    unsafe impl Sync for UdpGroupReceiver {}
 
     impl UdpGroupReceiver {
         /// Receives data from the group.
         pub async fn recv(&mut self, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr)> {
-            while let Some((recv_from, read_size, from)) = self.0.try_next().await? {
-                assert!(!(buf.len() < read_size), "Buff too short");
+            // Safety: FuturesUnordered will not call poll on the submitted future
+            unsafe { (&mut *self.0.get()).write(buf as *mut [u8]) };
 
-                buf[..read_size].copy_from_slice(&recv_from.buf[..read_size]);
+            while let Some((recv_from, read_size, from)) = self.1.try_next().await? {
+                assert!(!(buf.len() < read_size), "Buff too short");
 
                 let to = recv_from.addr;
 
-                self.0.push(recv_from);
+                self.1.push(recv_from);
 
                 return Ok((read_size, from, to));
             }

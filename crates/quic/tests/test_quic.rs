@@ -1,4 +1,7 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::{
+    iter::repeat,
+    net::{SocketAddr, ToSocketAddrs},
+};
 
 use futures::{AsyncReadExt, AsyncWriteExt};
 use n3_spawner::spawn;
@@ -91,7 +94,11 @@ async fn create_mock_server<S: ToSocketAddrs>(laddrs: S) -> Vec<SocketAddr> {
 async fn test_echo() {
     // _ = pretty_env_logger::try_init_timed();
 
-    let raddrs = create_mock_server("127.0.0.1:0").await;
+    let raddrs = repeat("127.0.0.1:0".parse().unwrap())
+        .take(10)
+        .collect::<Vec<_>>();
+
+    let raddrs = create_mock_server(raddrs.as_slice()).await;
 
     let client = QuicConnector::new(mock_config(false))
         .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])

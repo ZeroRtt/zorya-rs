@@ -3,7 +3,6 @@
 #[cfg(feature = "global_reactor")]
 use std::sync::OnceLock;
 use std::{
-    collections::VecDeque,
     fmt::Debug,
     io::{Error, ErrorKind, Result},
     sync::{
@@ -41,10 +40,6 @@ struct ReactorImpl {
     io_readable_stats: DashMap<Token, IoState>,
     /// stats for io writting ops.
     io_writable_stats: DashMap<Token, IoState>,
-    /// mapping io_token => group_io_token.
-    group_children: DashMap<Token, Token>,
-    /// Group token set.
-    group_token_set: DashMap<Token, VecDeque<Token>>,
     /// timing-wheel
     timing_wheel: Mutex<TimeWheel<(Token, bool)>>,
     /// mio registry.
@@ -57,8 +52,6 @@ impl ReactorImpl {
             token_gen: Default::default(),
             io_readable_stats: Default::default(),
             io_writable_stats: Default::default(),
-            group_children: Default::default(),
-            group_token_set: Default::default(),
             timing_wheel: Mutex::new(TimeWheel::new(tick_interval)),
             registry,
         }
@@ -160,18 +153,9 @@ impl Reactor {
             for event in events.iter() {
                 let token = event.token();
 
-                let (token, is_group) = if let Some(group_token) = self.0.group_children.get(&token)
-                {
-                    (*group_token, true)
-                } else {
-                    (token, false)
-                };
-
                 log::trace!(
-                    "Reactor(background) rasied event, token={:?}, is_group={}, origin_token={:?}, readable={}, writable={}",
+                    "Reactor(background) rasied event, token={:?}, readable={}, writable={}",
                     token,
-                    is_group,
-                    event.token(),
                     event.is_readable(),
                     event.is_writable(),
                 );
@@ -184,18 +168,6 @@ impl Reactor {
                             }
                             _ => {}
                         }
-
-                        if is_group {
-                            if let Some(mut ready_queue) = self.0.group_token_set.get_mut(&token) {
-                                log::trace!(
-                                    "Reactor(background) append ready events to group, group={:?}, token={:?}, interest=Readable",
-                                    token,
-                                    event.token(),
-                                );
-
-                                ready_queue.push_back(event.token());
-                            }
-                        }
                     }
                 }
 
@@ -206,18 +178,6 @@ impl Reactor {
                                 wakers.push(waker);
                             }
                             _ => {}
-                        }
-
-                        if is_group {
-                            if let Some(mut ready_queue) = self.0.group_token_set.get_mut(&token) {
-                                log::trace!(
-                                    "Reactor(background) append ready events to group, group={:?}, token={:?}, interest=Writable",
-                                    token,
-                                    event.token(),
-                                );
-
-                                ready_queue.push_back(event.token());
-                            }
                         }
                     }
                 }
@@ -364,34 +324,6 @@ impl Reactor {
         log::trace!("Reactor(poll_io): poll resource, token={:?}", io,);
 
         if let Some(mut stat) = stats.get_mut(&io) {
-            if let Some(mut ready_queue) = self.0.group_token_set.get_mut(&io) {
-                log::trace!(
-                    "Reactor(poll_io): poll group resource, token={:?}, readiness={}",
-                    io,
-                    ready_queue.len()
-                );
-
-                assert_eq!(deadline, None, "Call `poll_io` on group with `deadline`.");
-
-                while let Some(next) = ready_queue.pop_front() {
-                    match io_f(next) {
-                        Ok(r) => return Poll::Ready(Ok(r)),
-                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(err) => return Poll::Ready(Err(err)),
-                    }
-                }
-
-                log::trace!(
-                    "Reactor(poll_io): poll group resource, token={:?}, pending",
-                    io,
-                );
-
-                *stat = IoState::Waker(cx.waker().clone());
-                return Poll::Pending;
-            }
-
             match std::mem::take(&mut *stat) {
                 IoState::Timeout => {
                     return Poll::Ready(Err(Error::new(
@@ -447,47 +379,6 @@ impl Reactor {
             ErrorKind::NotFound,
             format!("poll_io: resource is not found"),
         )));
-    }
-
-    /// Group a set of tokens.
-    pub fn group<'a, G: IntoIterator<Item = &'a Token>>(&self, tokens: G) -> Result<Token> {
-        let group_token = self.0.next_token(Interest::READABLE);
-
-        self.0
-            .group_token_set
-            .insert(group_token, Default::default());
-
-        for token in tokens.into_iter() {
-            assert!(
-                self.0.group_children.insert(*token, group_token).is_none(),
-                "token({:?}) group by twice.",
-                token
-            );
-        }
-
-        Ok(group_token)
-    }
-
-    /// ungroup a group.
-    pub fn ungroup<'a, G: IntoIterator<Item = &'a Token>>(
-        &self,
-        group: Token,
-        tokens: G,
-    ) -> Result<()> {
-        self.0.io_readable_stats.remove(&group);
-        self.0.io_writable_stats.remove(&group);
-
-        self.0.group_token_set.remove(&group);
-
-        for token in tokens.into_iter() {
-            assert!(
-                self.0.group_children.remove(token).is_some(),
-                "token({:?}) is not group({:?}).",
-                token,
-                group
-            );
-        }
-        Ok(())
     }
 }
 

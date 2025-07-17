@@ -8,7 +8,10 @@ use std::{
 use dashmap::{DashMap, DashSet};
 use futures::{SinkExt, StreamExt, channel::mpsc};
 use n3_spawner::spawn;
-use n3io::{mio::Token, net::UdpGroup, reactor::Reactor};
+use n3io::{
+    net::udp_group::{self, UdpGroupReceiver, UdpGroupSender},
+    reactor::Reactor,
+};
 use quiche::{ConnectionId, Header, RecvInfo};
 
 use crate::{
@@ -17,18 +20,12 @@ use crate::{
 };
 
 /// Server socket for quic.
-pub struct QuicListener(Token, mpsc::Receiver<QuicConn>, Vec<SocketAddr>);
-
-impl Drop for QuicListener {
-    fn drop(&mut self) {
-        self.1.close();
-    }
-}
+pub struct QuicListener(mpsc::Receiver<QuicConn>, Vec<SocketAddr>);
 
 impl QuicListener {
     /// Returns A iterator over local bound addresses.
     pub fn local_addrs(&self) -> impl Iterator<Item = &SocketAddr> {
-        self.2.iter()
+        self.1.iter()
     }
     /// Start a quic server socket building process.
     pub fn build(config: quiche::Config) -> QuicServerBuilder {
@@ -44,7 +41,7 @@ impl QuicListener {
     ///
     /// If an accepted stream is returned, the remote address of the peer is returned along with it.
     pub async fn accept(&mut self) -> Result<QuicConn> {
-        if let Some(next) = self.1.next().await {
+        if let Some(next) = self.0.next().await {
             Ok(next)
         } else {
             Err(Error::new(
@@ -105,9 +102,10 @@ impl QuicServerBuilder {
     where
         S: ToSocketAddrs,
     {
-        let udp_group = Arc::new(UdpGroup::bind_with(laddrs, reactor).await?);
+        let (udp_group_sender, udp_group_receiver) =
+            udp_group::bind_with(laddrs, 65527, reactor.clone()).await?;
 
-        let laddrs = udp_group.local_addrs().copied().collect::<_>();
+        let laddrs = udp_group_sender.local_addrs().copied().collect::<_>();
 
         let validator = self
             .validator
@@ -115,10 +113,10 @@ impl QuicServerBuilder {
 
         let (incoming_sender, incoming_receiver) = mpsc::channel(self.incoming_queue_size);
 
-        let group_token = udp_group.group().group_token;
-
         let server = QuicServer {
-            udp_group,
+            reactor,
+            udp_group_sender,
+            udp_group_receiver,
             config: self.config,
             validator,
             incoming_sender,
@@ -128,20 +126,23 @@ impl QuicServerBuilder {
 
         spawn(async move {
             if let Err(err) = server.run().await {
-                log::error!("listener({:?}) stopped with error: {}", group_token, err);
+                log::error!("listener stopped with error: {}", err);
             } else {
-                log::info!("listener({:?}) stopped.", group_token,);
+                log::info!("listener stopped.",);
             }
         })?;
 
-        Ok(QuicListener(group_token, incoming_receiver, laddrs))
+        Ok(QuicListener(incoming_receiver, laddrs))
     }
 }
 
 /// Listener driver.
 struct QuicServer {
+    reactor: Reactor,
     /// udp sockets group.
-    udp_group: Arc<UdpGroup>,
+    udp_group_sender: UdpGroupSender,
+    /// udp sockets group.
+    udp_group_receiver: UdpGroupReceiver,
     /// quic server-side config.
     config: quiche::Config,
     /// validator for retry packet.
@@ -261,7 +262,7 @@ impl QuicServer {
 
         let max_send_udp_payload_size = quiche_conn.max_send_udp_payload_size();
 
-        let dispatcher = QuicConnDispatcher::new(quiche_conn, self.udp_group.reactor().clone());
+        let dispatcher = QuicConnDispatcher::new(quiche_conn, self.reactor.clone());
 
         self.quiche_conn_set
             .insert(header.dcid.clone().into_owned(), dispatcher.clone());
@@ -270,12 +271,12 @@ impl QuicServer {
 
         let quiche_conn_set = self.quiche_conn_set.clone();
         let handshaking_conn_set = self.handshaking_conn_set.clone();
-        let udp_group = self.udp_group.clone();
+        let udp_group_sender = self.udp_group_sender.clone();
 
         // start connection sending loop.
         spawn(async move {
             if let Err(err) =
-                Self::conn_send_loop(udp_group, dispatcher, max_send_udp_payload_size).await
+                Self::conn_send_loop(udp_group_sender, dispatcher, max_send_udp_payload_size).await
             {
                 log::error!(
                     "QuicConn(Server) sending loop is stopped, scid={:?},err={}",
@@ -290,7 +291,7 @@ impl QuicServer {
     }
 
     async fn conn_send_loop(
-        udp_group: Arc<UdpGroup>,
+        udp_group_sender: UdpGroupSender,
         dispatcher: QuicConnDispatcher,
         max_send_udp_payload_size: usize,
     ) -> Result<()> {
@@ -306,7 +307,7 @@ impl QuicServer {
                 send_info.to
             );
 
-            udp_group
+            udp_group_sender
                 .send(&buf[..send_size], send_info.from, send_info.to)
                 .await?;
         }
@@ -353,7 +354,7 @@ impl QuicServer {
             }
         };
 
-        self.udp_group
+        self.udp_group_sender
             .send(&buf[..send_size], recv_info.to, recv_info.from)
             .await
             .map(|_| ())
@@ -388,7 +389,7 @@ impl QuicServer {
             }
         };
 
-        self.udp_group
+        self.udp_group_sender
             .send(&buf[..send_size], recv_info.to, recv_info.from)
             .await
             .map(|_| ())
@@ -398,7 +399,7 @@ impl QuicServer {
     async fn run(mut self) -> Result<()> {
         let mut buf = vec![0; 65527];
         loop {
-            let (read_size, from, to) = self.udp_group.recv(&mut buf).await?;
+            let (read_size, from, to) = self.udp_group_receiver.recv(&mut buf).await?;
 
             let recv_info = RecvInfo { from, to };
 

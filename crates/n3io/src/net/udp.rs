@@ -3,11 +3,13 @@ use std::{
     future::poll_fn,
     io::{Error, ErrorKind, Result},
     net::{SocketAddr, ToSocketAddrs},
+    sync::Arc,
 };
 
+use futures::stream::FuturesUnordered;
 use mio::{Interest, Token};
 
-use crate::{group::Group, reactor::Reactor};
+use crate::reactor::Reactor;
 
 /// An asynchronous [`UdpSocket`](std::net::UdpSocket)  based on `mio` library.
 #[derive(Debug)]
@@ -72,174 +74,118 @@ impl UdpSocket {
     }
 }
 
-/// A group of udp sockets with optimised `recv_from` func.
-#[derive(Debug)]
-#[allow(unused)]
-pub struct UdpGroup {
-    sockaddrs: HashMap<SocketAddr, Token>,
-    /// inner source.
-    mio_udp_sockets: HashMap<Token, mio::net::UdpSocket>,
-    /// group object.
-    group: Group,
-}
+/// A group of udp sockets.
+pub mod udp_group {
 
-impl UdpGroup {
-    /// Returns a reference to the inner group object
-    pub fn group(&self) -> &Group {
-        &self.group
-    }
-
-    /// Returns a reference to the `reactor` bound to this group.
-    pub fn reactor(&self) -> &Reactor {
-        &self.group.reactor
-    }
-
-    /// Returns A iterator over local bound addresses.
-    pub fn laddrs(&self) -> impl Iterator<Item = &SocketAddr> {
-        self.sockaddrs.keys()
-    }
-
-    /// See [`new_with`](Self::bind_with)
-    #[cfg(feature = "global_reactor")]
-    pub async fn bind<S: ToSocketAddrs>(addrs: S) -> Result<Self> {
-        use crate::reactor::global_reactor;
-
-        Self::bind_with(addrs, global_reactor().clone()).await
-    }
-
-    /// Create a group of UDP sockets from `addrs`
-    pub async fn bind_with<S: ToSocketAddrs>(addrs: S, reactor: Reactor) -> Result<UdpGroup> {
-        let mut mio_udp_sockets = HashMap::new();
-        let mut sockaddrs = HashMap::new();
-
-        for addr in addrs.to_socket_addrs()? {
-            let mut socket = mio::net::UdpSocket::bind(addr)?;
-
-            let token =
-                reactor.register(&mut socket, Interest::READABLE.add(Interest::WRITABLE))?;
-
-            sockaddrs.insert(socket.local_addr()?, token);
-
-            mio_udp_sockets.insert(token, socket);
-        }
-
-        let group = Group::new(mio_udp_sockets.keys().cloned().collect(), reactor)?;
-
-        Ok(Self {
-            mio_udp_sockets,
-            group,
-            sockaddrs,
-        })
-    }
-
-    /// Sends data on the socket to the given address. On success, returns the number of bytes written.
-    pub async fn send(&self, buf: &[u8], from: SocketAddr, to: SocketAddr) -> Result<usize> {
-        let token = self
-            .sockaddrs
-            .get(&from)
-            .map(|v| v.clone())
-            .ok_or(Error::new(
-                ErrorKind::NotFound,
-                format!("invalid path from {} to {}", from, to),
-            ))?;
-
-        let socket = self
-            .mio_udp_sockets
-            .get(&token)
-            .expect("sockets not found.");
-
-        poll_fn(|cx| {
-            self.group
-                .reactor
-                .poll_io(cx, token, Interest::WRITABLE, None, |_| {
-                    socket.send_to(buf, to)
-                })
-        })
-        .await
-    }
-
-    /// Receives data from the socket. On success, returns the number of bytes read and the address from whence the data came.
-    pub async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr)> {
-        poll_fn(|cx| {
-            self.group.poll_io(cx, Interest::READABLE, None, |token| {
-                log::trace!(
-                    "call recv_from, readiness=true, group={:?}, socket={:?}",
-                    self.group.group_token,
-                    token
-                );
-
-                let socket = self
-                    .mio_udp_sockets
-                    .get(&token)
-                    .expect("group returns invalid token.");
-
-                let laddr = socket.local_addr()?;
-
-                return socket
-                    .recv_from(buf)
-                    .map(|(read_size, from)| (read_size, from, laddr));
-            })
-        })
-        .await
-    }
-
-    /// Returns group listening addresses.
-    pub fn local_addrs(&self) -> impl Iterator<Item = &SocketAddr> {
-        self.sockaddrs.keys()
-    }
-}
-
-#[cfg(feature = "global_reactor")]
-#[cfg(test)]
-mod tests {
-    use std::iter::repeat;
-
-    use futures::executor::ThreadPool;
+    use futures::TryStreamExt;
 
     use super::*;
 
-    #[futures_test::test]
-    async fn test_udp_group() {
-        // _ = pretty_env_logger::try_init();
+    struct UdpGroupRecvFrom {
+        addr: SocketAddr,
+        buf: Vec<u8>,
+        socket: Arc<UdpSocket>,
+    }
 
-        let laddrs = repeat("127.0.0.1:0".parse().unwrap())
-            .take(20)
-            .collect::<Vec<SocketAddr>>();
+    impl Future for UdpGroupRecvFrom {
+        type Output = Result<(Self, usize, SocketAddr)>;
 
-        let group = UdpGroup::bind(laddrs.as_slice()).await.unwrap();
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            self.socket
+                .reactor
+                .clone()
+                .poll_io(cx, self.socket.token, Interest::READABLE, None, |_| {
+                    self.socket.clone().mio_udp_socket.recv_from(&mut self.buf)
+                })
+                .map_ok(|(read_size, from)| {
+                    (
+                        Self {
+                            addr: self.addr,
+                            socket: self.socket.clone(),
+                            buf: std::mem::take(&mut self.buf),
+                        },
+                        read_size,
+                        from,
+                    )
+                })
+        }
+    }
 
-        let laddrs = group.local_addrs().copied().collect::<Vec<_>>();
+    /// Create a udp socket group.
+    pub async fn bind_with<S>(
+        laddrs: S,
+        max_recv_buf: usize,
+        reactor: Reactor,
+    ) -> Result<(UdpGroupSender, UdpGroupReceiver)>
+    where
+        S: ToSocketAddrs,
+    {
+        let mut sockets = HashMap::new();
 
-        let spawner = ThreadPool::new().unwrap();
+        let map = FuturesUnordered::new();
 
-        spawner.spawn_ok(async move {
-            log::trace!("server sockets start recv.");
-            let mut buf = vec![0; 100];
-            while let Ok((read_size, from, to)) = group.recv(&mut buf).await {
-                log::info!("recv from {} to {}", from, to);
-                assert_eq!(
-                    group.send(&buf[..read_size], to, from).await.unwrap(),
-                    read_size
-                );
+        for laddr in laddrs.to_socket_addrs()? {
+            let socket = Arc::new(UdpSocket::bind_with(laddr, reactor.clone()).await?);
+            let laddr = socket.mio_socket().local_addr()?;
+
+            sockets.insert(laddr, socket.clone());
+
+            map.push(UdpGroupRecvFrom {
+                addr: laddr,
+                socket,
+                buf: vec![0; max_recv_buf],
+            });
+        }
+
+        Ok((UdpGroupSender(Arc::new(sockets)), UdpGroupReceiver(map)))
+    }
+
+    /// A sender send data via a udp group;
+    #[derive(Clone)]
+    pub struct UdpGroupSender(Arc<HashMap<SocketAddr, Arc<UdpSocket>>>);
+
+    impl UdpGroupSender {
+        /// Returns iterator to over local bound addresses.
+        pub fn local_addrs(&self) -> impl Iterator<Item = &SocketAddr> {
+            self.0.keys()
+        }
+        /// Send datagram via path.
+        pub async fn send(&self, buf: &[u8], from: SocketAddr, to: SocketAddr) -> Result<usize> {
+            let socket = self
+                .0
+                .get(&from)
+                .ok_or(Error::new(
+                    ErrorKind::AddrNotAvailable,
+                    format!("UdpGroup: invalid from address `{}`", from),
+                ))?
+                .clone();
+
+            socket.send_to(buf, to).await
+        }
+    }
+
+    /// A receiver recieve data from socket group.
+    pub struct UdpGroupReceiver(FuturesUnordered<UdpGroupRecvFrom>);
+
+    impl UdpGroupReceiver {
+        /// Receives data from the group.
+        pub async fn recv(&mut self, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr)> {
+            while let Some((recv_from, read_size, from)) = self.0.try_next().await? {
+                assert!(!(buf.len() < read_size), "Buff too short");
+
+                buf[..read_size].copy_from_slice(&recv_from.buf[..read_size]);
+
+                let to = recv_from.addr;
+
+                self.0.push(recv_from);
+
+                return Ok((read_size, from, to));
             }
-        });
 
-        let client = UdpSocket::bind("127.0.0.1:0".parse().unwrap())
-            .await
-            .unwrap();
-
-        let mut buf = vec![0; 100];
-
-        for (index, raddr) in laddrs.into_iter().enumerate() {
-            let msg = format!("send to {}", index);
-
-            log::info!("send to {}", raddr);
-            client.send_to(msg.as_bytes(), raddr).await.unwrap();
-
-            assert_eq!(
-                client.recv_from(&mut buf).await.unwrap(),
-                (msg.len(), raddr)
-            );
+            unreachable!("FuturesUnordered: is empty.")
         }
     }
 }

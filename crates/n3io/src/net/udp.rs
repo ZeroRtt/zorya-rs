@@ -84,6 +84,11 @@ impl UdpGroup {
     pub fn group(&self) -> &Group {
         &self.group
     }
+
+    /// Returns a reference to the `reactor` bound to this group.
+    pub fn reactor(&self) -> &Reactor {
+        &self.group.reactor
+    }
     /// See [`new_with`](Self::bind_with)
     #[cfg(feature = "global_reactor")]
     pub async fn bind<S: ToSocketAddrs>(addrs: S) -> Result<Self> {

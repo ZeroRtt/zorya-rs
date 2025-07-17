@@ -13,3 +13,6 @@ pub use validator::*;
 
 mod conn;
 pub use conn::*;
+
+mod client;
+pub use client::*;

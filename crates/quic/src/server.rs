@@ -26,6 +26,16 @@ impl Drop for QuicListener {
 }
 
 impl QuicListener {
+    /// Start a quic server socket building process.
+    pub fn build(config: quiche::Config) -> QuicServerBuilder {
+        QuicServerBuilder {
+            config,
+            validator: None,
+            retry_token_timeout: Duration::from_secs(60),
+            incoming_queue_size: 100,
+        }
+    }
+
     /// Accepts a new `QUIC` connection.
     ///
     /// If an accepted stream is returned, the remote address of the peer is returned along with it.
@@ -54,16 +64,6 @@ pub struct QuicServerBuilder {
 }
 
 impl QuicServerBuilder {
-    /// Start a quic server socket building process.
-    pub fn new(config: quiche::Config) -> Self {
-        Self {
-            config,
-            validator: None,
-            retry_token_timeout: Duration::from_secs(60),
-            incoming_queue_size: 100,
-        }
-    }
-
     /// Update the `maximun unhandle incoming connection size`, the default value is `100`.
     pub fn incoming_queue_size(mut self, value: usize) -> Self {
         self.incoming_queue_size = value;
@@ -132,9 +132,8 @@ impl QuicServerBuilder {
     }
 }
 
-/// quic engine for quic server-side.
-#[allow(unused)]
-pub struct QuicServer {
+/// Listener driver.
+struct QuicServer {
     /// udp sockets group.
     udp_group: Arc<UdpGroup>,
     /// quic server-side config.
@@ -144,7 +143,7 @@ pub struct QuicServer {
     /// incoming connection sender.
     incoming_sender: mpsc::Sender<QuicConn>,
     /// handshaking connections.
-    handshaking_conn_set: DashSet<ConnectionId<'static>>,
+    handshaking_conn_set: Arc<DashSet<ConnectionId<'static>>>,
     /// aliving quic streams.
     quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>>,
 }
@@ -176,7 +175,6 @@ impl QuicServer {
         }
     }
 
-    #[allow(unused)]
     async fn initial(
         &mut self,
         header: Header<'_>,
@@ -216,7 +214,7 @@ impl QuicServer {
             }
         };
 
-        let mut conn = match quiche::accept(
+        let mut quiche_conn = match quiche::accept(
             &header.dcid,
             Some(&odcid),
             recv_info.to,
@@ -237,7 +235,7 @@ impl QuicServer {
             }
         };
 
-        if let Err(err) = conn.recv(&mut buf[..read_size], recv_info) {
+        if let Err(err) = quiche_conn.recv(&mut buf[..read_size], recv_info) {
             log::error!(
                 "failed to recv data, from={:?}, to={}, scid={:?}, dcid={:?}, err={}",
                 recv_info.from,
@@ -250,11 +248,54 @@ impl QuicServer {
         }
 
         // add to handshaking set.
-        if !conn.is_established() {
-            self.handshaking_conn_set.insert(header.dcid.into_owned());
+        if !quiche_conn.is_established() {
+            self.handshaking_conn_set
+                .insert(header.dcid.clone().into_owned());
         }
 
-        todo!()
+        let max_send_udp_payload_size = quiche_conn.max_send_udp_payload_size();
+
+        let dispatcher = QuicConnDispatcher::new(quiche_conn, self.udp_group.reactor().clone());
+
+        self.quiche_conn_set
+            .insert(header.dcid.clone().into_owned(), dispatcher.clone());
+
+        let scid = header.dcid.into_owned();
+
+        let quiche_conn_set = self.quiche_conn_set.clone();
+        let handshaking_conn_set = self.handshaking_conn_set.clone();
+        let udp_group = self.udp_group.clone();
+
+        // start connection sending loop.
+        spawn(async move {
+            if let Err(err) =
+                Self::conn_send_loop(udp_group, dispatcher, max_send_udp_payload_size).await
+            {
+                log::error!(
+                    "QuicConn(Server) sending loop is stopped, scid={:?},err={}",
+                    scid,
+                    err
+                );
+            }
+
+            handshaking_conn_set.remove(&scid);
+            quiche_conn_set.remove(&scid);
+        })
+    }
+
+    async fn conn_send_loop(
+        udp_group: Arc<UdpGroup>,
+        dispatcher: QuicConnDispatcher,
+        max_send_udp_payload_size: usize,
+    ) -> Result<()> {
+        let mut buf = vec![0; max_send_udp_payload_size];
+
+        loop {
+            let (send_size, send_info) = dispatcher.send(&mut buf).await?;
+            udp_group
+                .send(&buf[..send_size], send_info.from, send_info.to)
+                .await?;
+        }
     }
 
     async fn retry(&self, header: Header<'_>, buf: &mut [u8], recv_info: RecvInfo) -> Result<()> {

@@ -50,6 +50,27 @@ fn is_bidi(stream_id: u64) -> bool {
 pub struct QuicConnDispatcher(pub(crate) Arc<Mutex<QuicConnState>>);
 
 impl QuicConnDispatcher {
+    /// Create new `QuicConn` from raw `quiche::Connection.`
+    pub fn new(quiche_conn: quiche::Connection, reactor: Reactor) -> QuicConnDispatcher {
+        let outbound_bidi_stream_id_next = if quiche_conn.is_server() { 5 } else { 4 };
+
+        let state = Arc::new(Mutex::new(QuicConnState {
+            reactor,
+            quiche_conn,
+            outbound_bidi_stream_id_next,
+            inbound_stream_id_current: 0,
+            incoming_stream_id_fifo: Default::default(),
+            stream_readable_wakers: Default::default(),
+            stream_writable_wakers: Default::default(),
+            send_waker: Default::default(),
+            fifo_waker: Default::default(),
+            on_timeout_timer: Default::default(),
+            open_stream_waker: Default::default(),
+        }));
+
+        QuicConnDispatcher(state)
+    }
+
     /// Return true if the connection handshake is complete.
     pub(crate) fn is_established(&self) -> bool {
         self.0.lock().unwrap().quiche_conn.is_established()
@@ -101,15 +122,15 @@ impl QuicConnDispatcher {
                     return Poll::Ready(Ok((send_size, send_info)));
                 }
                 Err(quiche::Error::Done) => {
-                    if state.quiche_conn.is_draining() {
+                    if state.quiche_conn.is_closed() {
                         log::trace!(
-                            "QuicConn(poll_send) is draining, trace_id={}",
+                            "QuicConn(poll_send) is closed, trace_id={}",
                             state.quiche_conn.trace_id()
                         );
 
                         return Poll::Ready(Err(Error::new(
                             ErrorKind::BrokenPipe,
-                            "QuicConn(poll_send) is draining",
+                            "QuicConn(poll_send) is closed",
                         )));
                     }
 
@@ -307,30 +328,6 @@ impl Drop for QuicConn {
 }
 
 impl QuicConn {
-    /// Create new `QuicConn` from raw `quiche::Connection.`
-    pub fn new(
-        quiche_conn: quiche::Connection,
-        reactor: Reactor,
-    ) -> (QuicConn, QuicConnDispatcher) {
-        let outbound_bidi_stream_id_next = if quiche_conn.is_server() { 5 } else { 4 };
-
-        let state = Arc::new(Mutex::new(QuicConnState {
-            reactor,
-            quiche_conn,
-            outbound_bidi_stream_id_next,
-            inbound_stream_id_current: 0,
-            incoming_stream_id_fifo: Default::default(),
-            stream_readable_wakers: Default::default(),
-            stream_writable_wakers: Default::default(),
-            send_waker: Default::default(),
-            fifo_waker: Default::default(),
-            on_timeout_timer: Default::default(),
-            open_stream_waker: Default::default(),
-        }));
-
-        (QuicConn(state.clone()), QuicConnDispatcher(state))
-    }
-
     /// Accepts a new `QUIC` stream.
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<QuicStream>> {
         let mut state = self.0.lock().unwrap();

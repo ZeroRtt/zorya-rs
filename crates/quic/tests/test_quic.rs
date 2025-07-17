@@ -1,3 +1,5 @@
+use std::net::{SocketAddr, ToSocketAddrs};
+
 use futures::{AsyncReadExt, AsyncWriteExt};
 use n3_spawner::spawn;
 use n3quic::{QuicConnExt, QuicConnector, QuicListener};
@@ -50,37 +52,49 @@ fn mock_config(is_server: bool) -> Config {
     config
 }
 
-#[futures_test::test]
-async fn test_echo() {
-    // _ = pretty_env_logger::try_init_timed();
-
+async fn create_mock_server<S: ToSocketAddrs>(laddrs: S) -> Vec<SocketAddr> {
     let mut listener = QuicListener::build(mock_config(true))
-        .bind("127.0.0.1:0")
+        .bind(laddrs)
         .await
         .unwrap();
 
-    let raddr = listener.local_addrs().collect::<Vec<_>>()[0].clone();
+    let raddrs = listener.local_addrs().copied().collect::<Vec<_>>();
 
     spawn(async move {
         while let Ok(conn) = listener.accept().await {
-            while let Ok(mut stream) = conn.accept().await {
-                loop {
-                    let mut buf = vec![0; 100];
-                    let read_size = stream.read(&mut buf).await.unwrap();
+            spawn(async move {
+                while let Ok(mut stream) = conn.accept().await {
+                    spawn(async move {
+                        loop {
+                            let mut buf = vec![0; 100];
+                            let read_size = stream.read(&mut buf).await.unwrap();
 
-                    if read_size == 0 {
-                        break;
-                    }
+                            if read_size == 0 {
+                                break;
+                            }
 
-                    stream.write_all(&buf[..read_size]).await.unwrap();
+                            stream.write_all(&buf[..read_size]).await.unwrap();
+                        }
+                    })
+                    .unwrap();
                 }
-            }
+            })
+            .unwrap();
         }
     })
     .unwrap();
 
+    raddrs
+}
+
+#[futures_test::test]
+async fn test_echo() {
+    // _ = pretty_env_logger::try_init_timed();
+
+    let raddrs = create_mock_server("127.0.0.1:0").await;
+
     let client = QuicConnector::new(mock_config(false))
-        .connect(None, "127.0.0.1:0".parse().unwrap(), raddr)
+        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
         .await
         .unwrap();
 

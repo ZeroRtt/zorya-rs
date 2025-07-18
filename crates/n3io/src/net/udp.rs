@@ -132,10 +132,10 @@ pub mod udp_group {
         S: ToSocketAddrs,
     {
         let mut sockets = HashMap::new();
-
-        let map = FuturesUnordered::new();
-
-        let buf = Arc::new(UnsafeCell::new(MaybeUninit::uninit()));
+        let receiver = UdpGroupReceiver(
+            Arc::new(UnsafeCell::new(MaybeUninit::uninit())),
+            FuturesUnordered::new(),
+        );
 
         for laddr in laddrs.to_socket_addrs()? {
             let socket = Arc::new(UdpSocket::bind_with(laddr, reactor.clone()).await?);
@@ -143,17 +143,14 @@ pub mod udp_group {
 
             sockets.insert(laddr, socket.clone());
 
-            map.push(UdpGroupRecvFrom {
+            receiver.1.push(UdpGroupRecvFrom {
                 addr: laddr,
                 socket,
-                buf: buf.clone(),
+                buf: receiver.0.clone(),
             });
         }
 
-        Ok((
-            UdpGroupSender(Arc::new(sockets)),
-            UdpGroupReceiver(buf, map),
-        ))
+        Ok((UdpGroupSender(Arc::new(sockets)), receiver))
     }
 
     /// A sender send data via a udp group;

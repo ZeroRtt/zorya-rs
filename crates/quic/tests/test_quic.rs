@@ -1,12 +1,15 @@
 use std::{
     iter::repeat,
     net::{SocketAddr, ToSocketAddrs},
+    sync::{OnceLock, mpsc},
 };
 
 use futures::{AsyncReadExt, AsyncWriteExt};
+
 use n3_spawner::spawn;
 use n3quic::{QuicConnExt, QuicConnector, QuicListener};
 use quiche::Config;
+use rand::seq::SliceRandom;
 
 fn mock_config(is_server: bool) -> Config {
     use std::path::Path;
@@ -90,15 +93,38 @@ async fn create_mock_server<S: ToSocketAddrs>(laddrs: S) -> Vec<SocketAddr> {
     raddrs
 }
 
+static INIT: OnceLock<Vec<SocketAddr>> = OnceLock::new();
+
+fn init() -> Vec<SocketAddr> {
+    let mut addrs = INIT
+        .get_or_init(|| {
+            // _ = pretty_env_logger::try_init_timed();
+
+            let (sender, receiver) = mpsc::channel();
+            spawn(async move {
+                // _ = pretty_env_logger::try_init_timed();
+                let raddrs = repeat("127.0.0.1:0".parse().unwrap())
+                    .take(10)
+                    .collect::<Vec<_>>();
+
+                sender
+                    .send(create_mock_server(raddrs.as_slice()).await)
+                    .unwrap();
+            })
+            .unwrap();
+
+            receiver.recv().unwrap()
+        })
+        .clone();
+
+    addrs.shuffle(&mut rand::rng());
+
+    addrs
+}
+
 #[futures_test::test]
 async fn test_echo() {
-    // _ = pretty_env_logger::try_init_timed();
-
-    let raddrs = repeat("127.0.0.1:0".parse().unwrap())
-        .take(10)
-        .collect::<Vec<_>>();
-
-    let raddrs = create_mock_server(raddrs.as_slice()).await;
+    let raddrs = init();
 
     let client = QuicConnector::new(mock_config(false))
         .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
@@ -116,4 +142,32 @@ async fn test_echo() {
 
         assert_eq!(&buf[..read_size], b"hello world");
     }
+}
+
+#[futures_test::test]
+async fn test_stream_limit() {
+    let raddrs = init();
+
+    let client = QuicConnector::new(mock_config(false))
+        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+        .await
+        .unwrap();
+
+    let mut streams = vec![];
+
+    // the `max_streams_bidi` is 100, and stream `0` is a special control stream.
+    // so only `99` streams are reserved.
+    for _ in 0..1 {
+        streams.push(client.open().await.unwrap());
+    }
+
+    drop(streams);
+
+    let mut stream = client.open().await.unwrap();
+
+    stream.write_all(b"hello world").await.unwrap();
+
+    let mut buf = vec![0; 10];
+
+    stream.read(&mut buf).await.unwrap();
 }

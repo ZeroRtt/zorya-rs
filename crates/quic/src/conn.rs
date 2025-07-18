@@ -436,6 +436,12 @@ impl QuicStream {
     fn close_stream(&self) -> Result<()> {
         let mut state = self.1.lock().unwrap();
 
+        log::trace!(
+            "Close stream, stream_id={}, conn_id={}",
+            self.0,
+            state.quiche_conn.trace_id()
+        );
+
         if !state.quiche_conn.stream_finished(self.0) {
             log::trace!(
                 "Close stream with unread data, id={}, trace_id={}",
@@ -452,6 +458,11 @@ impl QuicStream {
                 state.quiche_conn.trace_id(),
                 err
             );
+        }
+
+        if let Some(waker) = state.send_waker.take() {
+            drop(state);
+            waker.wake();
         }
 
         Ok(())

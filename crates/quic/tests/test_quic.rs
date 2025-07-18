@@ -1,15 +1,11 @@
-use std::{
-    iter::repeat,
-    net::{SocketAddr, ToSocketAddrs},
-    sync::{OnceLock, mpsc},
-};
+use std::{iter::repeat, net::SocketAddr};
 
-use futures::{AsyncReadExt, AsyncWriteExt};
+use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
 
+use futures_test::task::noop_context;
 use n3_spawner::spawn;
 use n3quic::{QuicConnExt, QuicConnector, QuicListener};
 use quiche::Config;
-use rand::seq::SliceRandom;
 
 fn mock_config(is_server: bool) -> Config {
     use std::path::Path;
@@ -19,7 +15,7 @@ fn mock_config(is_server: bool) -> Config {
     config.set_initial_max_data(10_000_000);
     config.set_initial_max_stream_data_bidi_local(1024 * 1024);
     config.set_initial_max_stream_data_bidi_remote(1024 * 1024);
-    config.set_initial_max_streams_bidi(100);
+    config.set_initial_max_streams_bidi(3);
     config.set_initial_max_streams_uni(100);
 
     config.verify_peer(true);
@@ -58,9 +54,13 @@ fn mock_config(is_server: bool) -> Config {
     config
 }
 
-async fn create_mock_server<S: ToSocketAddrs>(laddrs: S) -> Vec<SocketAddr> {
+async fn create_mock_server() -> Vec<SocketAddr> {
+    let laddrs = repeat("127.0.0.1:0".parse().unwrap())
+        .take(10)
+        .collect::<Vec<_>>();
+
     let mut listener = QuicListener::build(mock_config(true))
-        .bind(laddrs)
+        .bind(laddrs.as_slice())
         .await
         .unwrap();
 
@@ -93,38 +93,37 @@ async fn create_mock_server<S: ToSocketAddrs>(laddrs: S) -> Vec<SocketAddr> {
     raddrs
 }
 
-static INIT: OnceLock<Vec<SocketAddr>> = OnceLock::new();
+// static INIT: OnceLock<Vec<SocketAddr>> = OnceLock::new();
 
-fn init() -> Vec<SocketAddr> {
-    let mut addrs = INIT
-        .get_or_init(|| {
-            // _ = pretty_env_logger::try_init_timed();
+// fn init() -> Vec<SocketAddr> {
+//     let mut addrs = INIT
+//         .get_or_init(|| {
+//             // _ = pretty_env_logger::try_init_timed();
 
-            let (sender, receiver) = mpsc::channel();
-            spawn(async move {
-                // _ = pretty_env_logger::try_init_timed();
-                let raddrs = repeat("127.0.0.1:0".parse().unwrap())
-                    .take(10)
-                    .collect::<Vec<_>>();
+//             let (sender, receiver) = mpsc::channel();
+//             spawn(async move {
+//                 let raddrs = repeat("127.0.0.1:0".parse().unwrap())
+//                     .take(10)
+//                     .collect::<Vec<_>>();
 
-                sender
-                    .send(create_mock_server(raddrs.as_slice()).await)
-                    .unwrap();
-            })
-            .unwrap();
+//                 sender
+//                     .send(create_mock_server(raddrs.as_slice()).await)
+//                     .unwrap();
+//             })
+//             .unwrap();
 
-            receiver.recv().unwrap()
-        })
-        .clone();
+//             receiver.recv().unwrap()
+//         })
+//         .clone();
 
-    addrs.shuffle(&mut rand::rng());
+//     addrs.shuffle(&mut rand::rng());
 
-    addrs
-}
+//     addrs
+// }
 
 #[futures_test::test]
 async fn test_echo() {
-    let raddrs = init();
+    let raddrs = create_mock_server().await;
 
     let client = QuicConnector::new(mock_config(false))
         .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
@@ -146,28 +145,52 @@ async fn test_echo() {
 
 #[futures_test::test]
 async fn test_stream_limit() {
-    let raddrs = init();
+    let raddrs = create_mock_server().await;
 
     let client = QuicConnector::new(mock_config(false))
         .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
         .await
         .unwrap();
 
+    let mut buf = vec![0; 100];
+
+    // the `max_streams_bidi` is 3, and stream `0` is a special control stream.
+    // so only `2` streams are reserved.
+    for _ in 0..99 {
+        let stream = client.open().await.unwrap();
+
+        (&stream).write_all(b"hello world").await.unwrap();
+        (&stream).read(&mut buf).await.unwrap();
+    }
+}
+
+#[futures_test::test]
+async fn test_stream_limit2() {
+    let raddrs = create_mock_server().await;
+
+    let client = QuicConnector::new(mock_config(false))
+        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+        .await
+        .unwrap();
+
+    let mut buf = vec![0; 100];
+
     let mut streams = vec![];
 
-    // the `max_streams_bidi` is 100, and stream `0` is a special control stream.
-    // so only `99` streams are reserved.
-    for _ in 0..1 {
-        streams.push(client.open().await.unwrap());
+    // the `max_streams_bidi` is 3, and stream `0` is a special control stream.
+    // so only `2` streams are reserved.
+    for _ in 0..2 {
+        let stream = client.open().await.unwrap();
+
+        (&stream).write_all(b"hello world").await.unwrap();
+        (&stream).read(&mut buf).await.unwrap();
+
+        streams.push(stream);
     }
+
+    assert!(client.open().poll_unpin(&mut noop_context()).is_pending());
 
     drop(streams);
 
-    let mut stream = client.open().await.unwrap();
-
-    stream.write_all(b"hello world").await.unwrap();
-
-    let mut buf = vec![0; 10];
-
-    stream.read(&mut buf).await.unwrap();
+    client.open().await.unwrap();
 }

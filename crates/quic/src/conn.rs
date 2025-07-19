@@ -80,6 +80,103 @@ impl QuicConnState {
             }
         }
     }
+
+    fn poll_conn_stat_events(&mut self) -> Vec<Waker> {
+        let mut wakers = vec![];
+        let mut ordering_readable_id_set = BinaryHeap::new();
+
+        while let Some(id) = self.quiche_conn.stream_readable_next() {
+            ordering_readable_id_set.push(Reverse(id));
+        }
+
+        while let Some(Reverse(id)) = ordering_readable_id_set.pop() {
+            log::trace!(
+                "QuicConn({}): stream readable, stream_id={}, trace_id={}",
+                self.quiche_conn.is_server(),
+                id,
+                self.quiche_conn.trace_id()
+            );
+
+            if is_bidi(id)
+                && !is_local(id, self.quiche_conn.is_server())
+                && self.inbound_stream_id_current < id
+            {
+                self.inbound_stream_id_current = id;
+                self.incoming_stream_id_fifo.push_back(id);
+
+                log::trace!(
+                    "QuicConn({}): new incoming stream, id={}, trace_id={}",
+                    self.quiche_conn.is_server(),
+                    id,
+                    self.quiche_conn.trace_id()
+                );
+
+                continue;
+            }
+
+            if let Some(waker) = self.stream_readable_wakers.remove(&id) {
+                log::trace!(
+                    "QuicConn({}): wakeup stream readable, id={},trace_id={}",
+                    self.quiche_conn.is_server(),
+                    id,
+                    self.quiche_conn.trace_id()
+                );
+
+                wakers.push(waker);
+
+                continue;
+            }
+
+            // clear closing stream.
+            if let Some(closing_timestamp) = self.closing_stream_set.remove(&id) {
+                if !self.closing_recv(id) {
+                    self.closing_stream_set.insert(id, closing_timestamp);
+                }
+            }
+        }
+
+        if !self.incoming_stream_id_fifo.is_empty() {
+            if let Some(waker) = self.fifo_waker.take() {
+                log::trace!(
+                    "Wakeup stream incoming, trace_id={}",
+                    self.quiche_conn.trace_id()
+                );
+                wakers.push(waker);
+            }
+        }
+
+        while let Some(id) = self.quiche_conn.stream_writable_next() {
+            if let Some(waker) = self.stream_writable_wakers.remove(&id) {
+                log::trace!(
+                    "Wakeup stream writable, id={},trace_id={}",
+                    id,
+                    self.quiche_conn.trace_id()
+                );
+                wakers.push(waker);
+            }
+        }
+
+        log::trace!(
+            "QuicConn({}): poll_conn_stat_events, peer_streams_left_bidi={}, trace_id={}",
+            self.quiche_conn.is_server(),
+            self.quiche_conn.peer_streams_left_bidi(),
+            self.quiche_conn.trace_id(),
+        );
+
+        if self.quiche_conn.peer_streams_left_bidi() > 0 {
+            if let Some(waker) = self.open_stream_waker.take() {
+                log::trace!(
+                    "QuicConn({}): wakeup open stream, peer_streams_left_bidi={}, trace_id={}",
+                    self.quiche_conn.is_server(),
+                    self.quiche_conn.peer_streams_left_bidi(),
+                    self.quiche_conn.trace_id(),
+                );
+                wakers.push(waker);
+            }
+        }
+
+        wakers
+    }
 }
 
 /// Returns true if the stream was created locally.
@@ -162,7 +259,7 @@ impl QuicConnDispatcher {
                         state.quiche_conn.trace_id()
                     );
 
-                    let wakers = Self::poll_conn_stat_events(&mut state);
+                    let wakers = state.poll_conn_stat_events();
 
                     drop(state);
 
@@ -224,14 +321,38 @@ impl QuicConnDispatcher {
         info: RecvInfo,
     ) -> Poll<Result<usize>> {
         let mut state = self.0.lock().unwrap();
-        let recv_size = state
-            .quiche_conn
-            .recv(buf, info)
-            .map_err(|err| Error::other(err))?;
 
-        let mut wakers = Self::poll_conn_stat_events(&mut state);
+        let recv_size = match state.quiche_conn.recv(buf, info) {
+            Ok(recv_size) => {
+                log::trace!(
+                    "QuicConn({}): recv data, len={}, is_closed={}, is_draining={}",
+                    state.quiche_conn.is_server(),
+                    recv_size,
+                    state.quiche_conn.is_closed(),
+                    state.quiche_conn.is_draining(),
+                );
+
+                recv_size
+            }
+            Err(err) => {
+                log::error!(
+                    "QuicConn({}): recv data, trace_id={}, err={}",
+                    state.quiche_conn.is_server(),
+                    state.quiche_conn.trace_id(),
+                    err
+                );
+                return Poll::Ready(Err(Error::other(err)));
+            }
+        };
+
+        let mut wakers = state.poll_conn_stat_events();
 
         if let Some(waker) = state.send_waker.take() {
+            log::trace!(
+                "QuicConn({}): wake up sending task, trace_id={}",
+                state.quiche_conn.is_server(),
+                state.quiche_conn.trace_id(),
+            );
             wakers.push(waker);
         }
 
@@ -242,103 +363,6 @@ impl QuicConnDispatcher {
         }
 
         Poll::Ready(Ok(recv_size))
-    }
-
-    fn poll_conn_stat_events(state: &mut QuicConnState) -> Vec<Waker> {
-        let mut wakers = vec![];
-        let mut ordering_readable_id_set = BinaryHeap::new();
-
-        while let Some(id) = state.quiche_conn.stream_readable_next() {
-            ordering_readable_id_set.push(Reverse(id));
-        }
-
-        while let Some(Reverse(id)) = ordering_readable_id_set.pop() {
-            log::trace!(
-                "QuicConn({}): stream readable, stream_id={}, trace_id={}",
-                state.quiche_conn.is_server(),
-                id,
-                state.quiche_conn.trace_id()
-            );
-
-            if is_bidi(id)
-                && !is_local(id, state.quiche_conn.is_server())
-                && state.inbound_stream_id_current < id
-            {
-                state.inbound_stream_id_current = id;
-                state.incoming_stream_id_fifo.push_back(id);
-
-                log::trace!(
-                    "QuicConn({}): new incoming stream, id={}, trace_id={}",
-                    state.quiche_conn.is_server(),
-                    id,
-                    state.quiche_conn.trace_id()
-                );
-
-                continue;
-            }
-
-            if let Some(waker) = state.stream_readable_wakers.remove(&id) {
-                log::trace!(
-                    "QuicConn({}): wakeup stream readable, id={},trace_id={}",
-                    state.quiche_conn.is_server(),
-                    id,
-                    state.quiche_conn.trace_id()
-                );
-
-                wakers.push(waker);
-
-                continue;
-            }
-
-            // clear closing stream.
-            if let Some(closing_timestamp) = state.closing_stream_set.remove(&id) {
-                if !state.closing_recv(id) {
-                    state.closing_stream_set.insert(id, closing_timestamp);
-                }
-            }
-        }
-
-        if !state.incoming_stream_id_fifo.is_empty() {
-            if let Some(waker) = state.fifo_waker.take() {
-                log::trace!(
-                    "Wakeup stream incoming, trace_id={}",
-                    state.quiche_conn.trace_id()
-                );
-                wakers.push(waker);
-            }
-        }
-
-        while let Some(id) = state.quiche_conn.stream_writable_next() {
-            if let Some(waker) = state.stream_writable_wakers.remove(&id) {
-                log::trace!(
-                    "Wakeup stream writable, id={},trace_id={}",
-                    id,
-                    state.quiche_conn.trace_id()
-                );
-                wakers.push(waker);
-            }
-        }
-
-        log::trace!(
-            "QuicConn({}): poll_conn_stat_events, peer_streams_left_bidi={}, trace_id={}",
-            state.quiche_conn.is_server(),
-            state.quiche_conn.peer_streams_left_bidi(),
-            state.quiche_conn.trace_id(),
-        );
-
-        if state.quiche_conn.peer_streams_left_bidi() > 0 {
-            if let Some(waker) = state.open_stream_waker.take() {
-                log::trace!(
-                    "QuicConn({}): wakeup open stream, peer_streams_left_bidi={}, trace_id={}",
-                    state.quiche_conn.is_server(),
-                    state.quiche_conn.peer_streams_left_bidi(),
-                    state.quiche_conn.trace_id(),
-                );
-                wakers.push(waker);
-            }
-        }
-
-        wakers
     }
 }
 
@@ -401,19 +425,64 @@ pub struct QuicConn(pub(crate) Arc<Mutex<QuicConnState>>);
 
 impl Drop for QuicConn {
     fn drop(&mut self) {
-        let mut state = self.0.lock().unwrap();
-
-        if let Err(err) = state.quiche_conn.close(false, 0x0, b"") {
-            log::trace!(
-                "Close quic_conn, trace_id={}, err={}",
-                state.quiche_conn.trace_id(),
-                err
-            );
-        }
+        _ = self.close(0x0, b"");
     }
 }
 
 impl QuicConn {
+    /// Close this connection.
+    pub fn close(&self, err: u64, reason: &[u8]) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+
+        match state.quiche_conn.close(false, er, reason) {
+            Ok(_) => {
+                log::trace!(
+                    "QuicConn({}): close, trace_id={}",
+                    state.quiche_conn.is_server(),
+                    state.quiche_conn.trace_id()
+                );
+            }
+            Err(quiche::Error::Done) => {
+                log::trace!(
+                    "QuicConn({}): already closed, trace_id={}",
+                    state.quiche_conn.is_server(),
+                    state.quiche_conn.trace_id()
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                log::trace!(
+                    "QuicConn({}): failed to close, trace_id={}, err={}",
+                    state.quiche_conn.is_server(),
+                    state.quiche_conn.trace_id(),
+                    err
+                );
+                return Err(Error::other(err));
+            }
+        }
+
+        let mut wakers = vec![];
+
+        // make sure to wake up sending task.
+        if let Some(waker) = state.send_waker.take() {
+            log::trace!(
+                "QuicConn({}): wake up sending task, trace_id={}",
+                state.quiche_conn.is_server(),
+                state.quiche_conn.trace_id()
+            );
+
+            wakers.push(waker);
+        }
+
+        drop(state);
+
+        for waker in wakers {
+            waker.wake();
+        }
+
+        Ok(())
+    }
+
     /// Accepts a new `QUIC` stream.
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<QuicStream>> {
         let mut state = self.0.lock().unwrap();
@@ -612,11 +681,6 @@ impl QuicStream {
     ) -> Poll<Result<(usize, bool)>> {
         let mut state = self.1.lock().unwrap();
 
-        // when `stream_finished` is true, always returns (0,true)
-        if state.quiche_conn.stream_finished(self.0) {
-            return Poll::Ready(Ok((0, true)));
-        }
-
         match state.quiche_conn.stream_recv(self.0, buf) {
             Ok((read_size, fin)) => {
                 log::trace!(
@@ -646,6 +710,15 @@ impl QuicStream {
                 return Poll::Ready(Err(Error::other(err)));
             }
         }
+    }
+
+    /// Helper method for splitting the quic stream into two halves.
+    ///
+    /// The two halves returned implement the AsyncRead and AsyncWrite traits, respectively.
+    pub fn split(self) -> (QuicStreamReader, QuicStreamWriter) {
+        let this = Arc::new(self);
+
+        (QuicStreamReader(this.clone()), QuicStreamWriter(this))
     }
 }
 
@@ -702,5 +775,39 @@ impl AsyncRead for QuicStream {
         buf: &mut [u8],
     ) -> Poll<Result<usize>> {
         self.poll_stream_read(cx, buf).map_ok(|(len, _)| len)
+    }
+}
+
+/// Readable half of one quic stream.
+pub struct QuicStreamReader(Arc<QuicStream>);
+
+impl AsyncRead for QuicStreamReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize>> {
+        self.0.poll_stream_read(cx, buf).map_ok(|(len, _)| len)
+    }
+}
+
+/// Writable half of one quic stream.
+pub struct QuicStreamWriter(Arc<QuicStream>);
+
+impl AsyncWrite for QuicStreamWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize>> {
+        self.0.poll_stream_write(cx, buf, false)
+    }
+
+    fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.0.poll_stream_write(cx, b"", true).map_ok(|_| ())
     }
 }

@@ -146,14 +146,7 @@ impl QuicConnector {
         loop {
             let (send_size, send_info) = dispatcher.send(&mut buf).await?;
 
-            let send_size = udp_socket.send_to(&buf[..send_size], send_info.to).await?;
-
-            log::trace!(
-                "QuicConn(client) send data, len={}, from={}, to={}",
-                send_size,
-                send_info.from,
-                send_info.to
-            );
+            udp_socket.send_to(&buf[..send_size], send_info.to).await?;
         }
     }
 

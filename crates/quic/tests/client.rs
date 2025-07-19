@@ -1,4 +1,4 @@
-use std::{iter::repeat, net::SocketAddr};
+use std::{iter::repeat, net::SocketAddr, sync::mpsc};
 
 use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
 
@@ -55,6 +55,8 @@ fn mock_config(is_server: bool) -> Config {
 }
 
 async fn create_mock_server() -> Vec<SocketAddr> {
+    _ = pretty_env_logger::try_init_timed();
+
     let laddrs = repeat("127.0.0.1:0".parse().unwrap())
         .take(10)
         .collect::<Vec<_>>();
@@ -122,7 +124,7 @@ async fn create_mock_server() -> Vec<SocketAddr> {
 // }
 
 #[futures_test::test]
-async fn test_echo() {
+async fn echo_with_one_stream() {
     let raddrs = create_mock_server().await;
 
     let client = QuicConnector::new(mock_config(false))
@@ -144,7 +146,7 @@ async fn test_echo() {
 }
 
 #[futures_test::test]
-async fn test_stream_limit() {
+async fn echo_with_streams() {
     let raddrs = create_mock_server().await;
 
     let client = QuicConnector::new(mock_config(false))
@@ -165,7 +167,7 @@ async fn test_stream_limit() {
 }
 
 #[futures_test::test]
-async fn test_stream_limit2() {
+async fn max_streams() {
     let raddrs = create_mock_server().await;
 
     let client = QuicConnector::new(mock_config(false))
@@ -193,4 +195,33 @@ async fn test_stream_limit2() {
     drop(streams);
 
     client.open().await.unwrap();
+}
+
+#[futures_test::test]
+async fn close_conn() {
+    let raddrs = create_mock_server().await;
+
+    let client = QuicConnector::new(mock_config(false))
+        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+        .await
+        .unwrap();
+
+    let mut stream = client.open().await.unwrap();
+
+    let (sender, receiver) = mpsc::channel();
+
+    spawn(async move {
+        let mut buf = vec![0; 100];
+
+        stream
+            .read(&mut buf)
+            .await
+            .expect_err("connection is closed.");
+        sender.send(()).unwrap();
+    })
+    .unwrap();
+
+    drop(client);
+
+    receiver.recv().unwrap();
 }

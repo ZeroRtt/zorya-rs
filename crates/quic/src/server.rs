@@ -27,15 +27,6 @@ impl QuicListener {
     pub fn local_addrs(&self) -> impl Iterator<Item = &SocketAddr> {
         self.1.iter()
     }
-    /// Start a quic server socket building process.
-    pub fn build(config: quiche::Config) -> QuicServerBuilder {
-        QuicServerBuilder {
-            config,
-            validator: None,
-            retry_token_timeout: Duration::from_secs(60),
-            incoming_queue_size: 100,
-        }
-    }
 
     /// Accepts a new `QUIC` connection.
     ///
@@ -52,8 +43,7 @@ impl QuicListener {
     }
 }
 
-/// Builder for [`QuicServer`]
-pub struct QuicServerBuilder {
+struct QuicServerConfig {
     /// quic server-side config.
     config: quiche::Config,
     /// validator for retry packet.
@@ -64,26 +54,70 @@ pub struct QuicServerBuilder {
     incoming_queue_size: usize,
 }
 
-impl QuicServerBuilder {
+/// Builder for [`QuicServer`]
+pub struct QuicServer(Result<QuicServerConfig>);
+
+impl QuicServer {
+    /// Create a new `QuicServer` with default configuration.
+    pub fn new() -> Self {
+        Self(Ok(QuicServerConfig {
+            config: quiche::Config::new(quiche::PROTOCOL_VERSION).expect("quiche_config"),
+            validator: None,
+            retry_token_timeout: Duration::from_secs(60),
+            incoming_queue_size: 100,
+        }))
+    }
+
+    /// Start build a quic server with `quiche::Config`
+    pub fn with_quiche_config(config: quiche::Config) -> Self {
+        Self(Ok(QuicServerConfig {
+            config,
+            validator: None,
+            retry_token_timeout: Duration::from_secs(60),
+            incoming_queue_size: 100,
+        }))
+    }
+
+    pub fn quiche_config<F, E>(self, f: F) -> Self
+    where
+        F: FnOnce(&mut quiche::Config) -> std::result::Result<(), E>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        Self(self.0.and_then(|mut config| {
+            f(&mut config.config).map_err(|err| Error::other(err))?;
+
+            Ok(config)
+        }))
+    }
+
     /// Update the `maximun unhandle incoming connection size`, the default value is `100`.
-    pub fn incoming_queue_size(mut self, value: usize) -> Self {
-        self.incoming_queue_size = value;
-        self
+    pub fn incoming_queue_size(self, value: usize) -> Self {
+        Self(self.0.and_then(|mut config| {
+            config.incoming_queue_size = value;
+
+            Ok(config)
+        }))
     }
 
     /// Update expiration interval for retry token, the default value `60s`.
-    pub fn retry_token_timeout(mut self, duration: Duration) -> Self {
-        self.retry_token_timeout = duration;
-        self
+    pub fn retry_token_timeout(self, duration: Duration) -> Self {
+        Self(self.0.and_then(|mut config| {
+            config.retry_token_timeout = duration;
+
+            Ok(config)
+        }))
     }
 
     /// Update validator provider.
-    pub fn validator<V>(mut self, validator: V) -> Self
+    pub fn validator<V>(self, validator: V) -> Self
     where
         V: AddressValidator + Sync + Send + 'static,
     {
-        self.validator = Some(Box::new(validator));
-        self
+        Self(self.0.and_then(|mut config| {
+            config.validator = Some(Box::new(validator));
+
+            Ok(config)
+        }))
     }
 
     /// See [`bind_with`](Self::bind_with).
@@ -102,22 +136,23 @@ impl QuicServerBuilder {
     where
         S: ToSocketAddrs,
     {
+        let this = self.0?;
         let (udp_group_sender, udp_group_receiver) =
             udp_group::bind_with(laddrs, 65527, reactor.clone()).await?;
 
         let laddrs = udp_group_sender.local_addrs().copied().collect::<_>();
 
-        let validator = self
+        let validator = this
             .validator
-            .unwrap_or_else(|| Box::new(SimpleAddressValidator::new(self.retry_token_timeout)));
+            .unwrap_or_else(|| Box::new(SimpleAddressValidator::new(this.retry_token_timeout)));
 
-        let (incoming_sender, incoming_receiver) = mpsc::channel(self.incoming_queue_size);
+        let (incoming_sender, incoming_receiver) = mpsc::channel(this.incoming_queue_size);
 
-        let server = QuicServer {
+        let server = QuicListenerDriver {
             reactor,
             udp_group_sender,
             udp_group_receiver,
-            config: self.config,
+            config: this.config,
             validator,
             incoming_sender,
             quiche_conn_set: Default::default(),
@@ -137,7 +172,7 @@ impl QuicServerBuilder {
 }
 
 /// Listener driver.
-struct QuicServer {
+struct QuicListenerDriver {
     reactor: Reactor,
     /// udp sockets group.
     udp_group_sender: UdpGroupSender,
@@ -155,7 +190,7 @@ struct QuicServer {
     quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>>,
 }
 
-impl QuicServer {
+impl QuicListenerDriver {
     async fn initial(
         &mut self,
         header: Header<'_>,
@@ -287,6 +322,11 @@ impl QuicServer {
 
             handshaking_conn_set.remove(&scid);
             quiche_conn_set.remove(&scid);
+
+            log::trace!(
+                "QuicConn(Server) remove connection from set, scid={:?}",
+                scid
+            );
         })
     }
 

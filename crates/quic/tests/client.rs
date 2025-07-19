@@ -4,7 +4,7 @@ use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
 
 use futures_test::task::noop_context;
 use n3_spawner::spawn;
-use n3quic::{QuicConnExt, QuicConnector, QuicListener};
+use n3quic::{QuicConnExt, QuicConnector, QuicServer};
 use quiche::Config;
 
 fn mock_config(is_server: bool) -> Config {
@@ -61,7 +61,7 @@ async fn create_mock_server() -> Vec<SocketAddr> {
         .take(10)
         .collect::<Vec<_>>();
 
-    let mut listener = QuicListener::build(mock_config(true))
+    let mut listener = QuicServer::with_quiche_config(mock_config(true))
         .bind(laddrs.as_slice())
         .await
         .unwrap();
@@ -172,9 +172,7 @@ async fn echo_with_conns() {
 
     let mut buf = vec![0; 100];
 
-    // the `max_streams_bidi` is 3, and stream `0` is a special control stream.
-    // so only `2` streams are reserved.
-    for _ in 0..99 {
+    for _ in 0..30 {
         let client = QuicConnector::new(mock_config(false))
             .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
             .await

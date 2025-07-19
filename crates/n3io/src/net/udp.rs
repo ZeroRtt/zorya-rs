@@ -23,6 +23,13 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
+    /// shutdown the read and write of this udp socket.
+    pub fn shutdown(&self) -> Result<()> {
+        self.reactor.shutdown_read(self.token)?;
+        self.reactor.shutdown_write(self.token)?;
+
+        Ok(())
+    }
     /// Returns the immutable reference to the inner mio socket.
     pub fn mio_socket(&self) -> &mio::net::UdpSocket {
         &self.mio_udp_socket

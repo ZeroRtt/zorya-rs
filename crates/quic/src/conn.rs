@@ -334,25 +334,35 @@ impl QuicConnDispatcher {
                         )));
                     }
 
-                    if let Some(timeout) = state.quiche_conn.timeout_instant() {
-                        log::trace!(
-                            "QuicConn({}): send data pending, trace_id={:?}, timeout={:?}",
-                            state.quiche_conn.is_server(),
-                            state.quiche_conn.trace_id(),
-                            timeout,
-                        );
-
-                        let timer = state.reactor.deadline(timeout);
+                    if let Some(timeout) = state.quiche_conn.timeout() {
+                        let timer = state.reactor.deadline(Instant::now() + timeout);
 
                         match state.reactor.poll_timeout(cx, timer) {
                             Poll::Ready(_) => {
-                                state.reactor.deregister_timer(timer)?;
                                 // The deadline has expired.
                                 state.quiche_conn.on_timeout();
+
+                                state.reactor.deregister_timer(timer)?;
+
+                                log::trace!(
+                                    "QuicConn({}): send data directly on_timout, trace_id={:?}, timeout={:?}",
+                                    state.quiche_conn.is_server(),
+                                    state.quiche_conn.trace_id(),
+                                    timeout
+                                );
+
                                 continue;
                             }
                             Poll::Pending => {}
                         }
+
+                        log::trace!(
+                            "QuicConn({}): send data pending, trace_id={:?}, timeout={:?}, timer={:?}",
+                            state.quiche_conn.is_server(),
+                            state.quiche_conn.trace_id(),
+                            timeout,
+                            timer
+                        );
 
                         state.on_timeout_timer = Some(timer);
                     }
@@ -665,11 +675,17 @@ impl QuicStream {
         let mut state = self.1.lock().unwrap();
 
         log::trace!(
-            "QuiConn({}): close stream, stream_id={}, conn_id={}",
+            "QuiConn({}): close stream, stream_id={}, conn_id={}, is_draining={}, is_closed={}",
             state.quiche_conn.is_server(),
             self.0,
-            state.quiche_conn.trace_id()
+            state.quiche_conn.trace_id(),
+            state.quiche_conn.is_draining(),
+            state.quiche_conn.is_closed(),
         );
+
+        if state.quiche_conn.is_closed() {
+            return Ok(());
+        }
 
         if let Err(err) = state.quiche_conn.stream_send(self.0, b"", true) {
             log::error!(
@@ -764,10 +780,7 @@ impl QuicStream {
                 self.0,
                 state.quiche_conn.trace_id()
             );
-            return Poll::Ready(Err(Error::new(
-                ErrorKind::BrokenPipe,
-                "Connection is closed or is draining.",
-            )));
+            return Poll::Ready(Ok((0, true)));
         }
 
         match state.quiche_conn.stream_recv(self.0, buf) {

@@ -167,6 +167,27 @@ async fn echo_with_streams() {
 }
 
 #[futures_test::test]
+async fn echo_with_conns() {
+    let raddrs = create_mock_server().await;
+
+    let mut buf = vec![0; 100];
+
+    // the `max_streams_bidi` is 3, and stream `0` is a special control stream.
+    // so only `2` streams are reserved.
+    for _ in 0..99 {
+        let client = QuicConnector::new(mock_config(false))
+            .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+            .await
+            .unwrap();
+
+        let stream = client.open().await.unwrap();
+
+        (&stream).write_all(b"hello world").await.unwrap();
+        (&stream).read(&mut buf).await.unwrap();
+    }
+}
+
+#[futures_test::test]
 async fn max_streams() {
     let raddrs = create_mock_server().await;
 
@@ -213,10 +234,10 @@ async fn close_conn() {
     spawn(async move {
         let mut buf = vec![0; 100];
 
-        stream
-            .read(&mut buf)
-            .await
-            .expect_err("connection is closed.");
+        assert_eq!(
+            stream.read(&mut buf).await.expect("connection is closed."),
+            0
+        );
         sender.send(()).unwrap();
     })
     .unwrap();

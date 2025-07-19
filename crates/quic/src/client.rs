@@ -120,7 +120,7 @@ impl QuicConnector {
         max_send_udp_payload_size: usize,
     ) {
         if let Err(err) =
-            Self::client_send_loop_prv(udp_socket, &dispatcher, max_send_udp_payload_size).await
+            Self::client_send_loop_prv(&udp_socket, &dispatcher, max_send_udp_payload_size).await
         {
             log::error!(
                 "QuicConn(client) send loop stopped, scid={:?}, dcid={:?}, err={}",
@@ -135,10 +135,19 @@ impl QuicConnector {
                 dcid,
             );
         }
+
+        if let Err(err) = udp_socket.shutdown() {
+            log::error!(
+                "QuicConn(client): shutdown udp socket, scid={:?}, dcid={:?}, err={}",
+                scid,
+                dcid,
+                err
+            );
+        }
     }
 
     async fn client_send_loop_prv(
-        udp_socket: Arc<UdpSocket>,
+        udp_socket: &UdpSocket,
         dispatcher: &QuicConnDispatcher,
         max_send_udp_payload_size: usize,
     ) -> Result<()> {

@@ -25,6 +25,7 @@ enum IoState {
     Timer(u64, Waker),
     Waker(Waker),
     None,
+    Shutdown,
 }
 
 impl Default for IoState {
@@ -297,6 +298,54 @@ impl Reactor {
         }
     }
 
+    /// Shutdown the read of this io.
+    pub fn shutdown_read(&self, io: Token) -> Result<()> {
+        if let Some(mut stat) = self.0.io_readable_stats.get_mut(&io) {
+            let waker = match std::mem::take(&mut *stat) {
+                IoState::Timer(_, waker) | IoState::Waker(waker) => Some(waker),
+                _ => None,
+            };
+
+            *stat = IoState::Shutdown;
+
+            if let Some(waker) = waker {
+                drop(stat);
+                waker.wake();
+            }
+
+            return Ok(());
+        }
+
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("poll_io: resource is not found"),
+        ));
+    }
+
+    /// Shutdown the write of this io.
+    pub fn shutdown_write(&self, io: Token) -> Result<()> {
+        if let Some(mut stat) = self.0.io_writable_stats.get_mut(&io) {
+            let waker = match std::mem::take(&mut *stat) {
+                IoState::Timer(_, waker) | IoState::Waker(waker) => Some(waker),
+                _ => None,
+            };
+
+            *stat = IoState::Shutdown;
+
+            if let Some(waker) = waker {
+                drop(stat);
+                waker.wake();
+            }
+
+            return Ok(());
+        }
+
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("poll_io: resource is not found"),
+        ));
+    }
+
     /// Attempt to execute an operator on `io`.
     ///
     /// On success, returns Poll::Ready(Ok(num_bytes_read)).
@@ -325,6 +374,12 @@ impl Reactor {
 
         if let Some(mut stat) = stats.get_mut(&io) {
             match std::mem::take(&mut *stat) {
+                IoState::Shutdown => {
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::BrokenPipe,
+                        format!("Reactor: io read/write is shutdown, token={:?}", io),
+                    )));
+                }
                 IoState::Timeout => {
                     return Poll::Ready(Err(Error::new(
                         ErrorKind::TimedOut,

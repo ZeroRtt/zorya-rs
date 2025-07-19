@@ -434,7 +434,7 @@ impl QuicConn {
     pub fn close(&self, err: u64, reason: &[u8]) -> Result<()> {
         let mut state = self.0.lock().unwrap();
 
-        match state.quiche_conn.close(false, er, reason) {
+        match state.quiche_conn.close(false, err, reason) {
             Ok(_) => {
                 log::trace!(
                     "QuicConn({}): close, trace_id={}",

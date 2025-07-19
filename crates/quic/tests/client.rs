@@ -55,7 +55,7 @@ fn mock_config(is_server: bool) -> Config {
 }
 
 async fn create_mock_server() -> Vec<SocketAddr> {
-    _ = pretty_env_logger::try_init_timed();
+    // _ = pretty_env_logger::try_init_timed();
 
     let laddrs = repeat("127.0.0.1:0".parse().unwrap())
         .take(10)

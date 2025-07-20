@@ -1,54 +1,108 @@
 use std::{
     io::{Error, ErrorKind, Result},
-    net::SocketAddr,
+    net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
 };
 
 use n3_spawner::spawn;
 use n3io::{net::UdpSocket, reactor::Reactor, timeout::TimeoutExt};
 use quiche::{ConnectionId, RecvInfo};
+use rand::{rng, seq::SliceRandom};
 
 use crate::{QuicConn, QuicConnDispatcher, QuicConnDispatcherExt, random_conn_id};
 
-/// A builder to create a quic client connection.
+/// A builder for quic client sockets.
 pub struct QuicConnector {
-    config: quiche::Config,
+    quiche_config: quiche::Config,
+    raddrs: Vec<SocketAddr>,
     reactor: Reactor,
+    server_name: Option<String>,
 }
 
 impl QuicConnector {
     /// See [`new_with`](Self::new_with)
     #[cfg(feature = "global_reactor")]
-    pub fn new(config: quiche::Config) -> Self {
+    pub fn new<S: ToSocketAddrs>(
+        server_name: Option<&str>,
+        raddrs: S,
+        config: quiche::Config,
+    ) -> Result<Self> {
         use n3io::reactor::global_reactor;
 
-        Self::new_with(config, global_reactor().clone())
+        Self::new_with(server_name, raddrs, config, global_reactor().clone())
     }
-    /// Create a new instance from `quiche::Config`
-    pub fn new_with(config: quiche::Config, reactor: Reactor) -> Self {
-        Self { config, reactor }
+    /// Create a new `QuicConnector` instance.
+    pub fn new_with<S: ToSocketAddrs>(
+        server_name: Option<&str>,
+        raddrs: S,
+        config: quiche::Config,
+        reactor: Reactor,
+    ) -> Result<Self> {
+        let raddrs = raddrs.to_socket_addrs()?.collect();
+
+        Ok(Self {
+            quiche_config: config,
+            raddrs,
+            reactor,
+            server_name: server_name.map(|v| v.to_owned()),
+        })
     }
 
-    /// Start to establish a connection to `raddr`.
+    /// Create a new client socket and issue a non-blocking connect to a random address in the address pool.
+    ///
+    /// see [`QuicConn::connect`]
+    pub async fn connect(&mut self) -> Result<QuicConn> {
+        self.raddrs.shuffle(&mut rng());
+
+        QuicConn::connect_with(
+            self.server_name.as_deref(),
+            self.raddrs[0],
+            &mut self.quiche_config,
+            self.reactor.clone(),
+        )
+        .await
+    }
+}
+
+impl QuicConn {
+    /// See [`connect_with`](Self::connect_with)
+    #[cfg(feature = "global_reactor")]
     pub async fn connect(
-        &mut self,
         server_name: Option<&str>,
-        laddr: SocketAddr,
         raddr: SocketAddr,
-    ) -> Result<QuicConn> {
-        let udp_socket = UdpSocket::bind_with(laddr, self.reactor.clone()).await?;
+        config: &mut quiche::Config,
+    ) -> Result<Self> {
+        use n3io::reactor::global_reactor;
+
+        Self::connect_with(server_name, raddr, config, global_reactor().clone()).await
+    }
+
+    /// Create a new QUIC connection and issue a non-blocking connect to the specified address.
+    pub async fn connect_with(
+        server_name: Option<&str>,
+        raddr: SocketAddr,
+        config: &mut quiche::Config,
+        reactor: Reactor,
+    ) -> Result<Self> {
+        let laddr: SocketAddr = if raddr.is_ipv4() {
+            "127.0.0.1:0".parse().unwrap()
+        } else {
+            "[::1]:0".parse().unwrap()
+        };
+
+        let udp_socket = UdpSocket::bind_with(laddr, reactor.clone()).await?;
         let laddr = udp_socket.mio_socket().local_addr()?;
 
         let scid = random_conn_id();
 
-        let quiche_conn = quiche::connect(server_name, &scid, laddr, raddr, &mut self.config)
-            .map_err(Error::other)?;
+        let quiche_conn =
+            quiche::connect(server_name, &scid, laddr, raddr, config).map_err(Error::other)?;
 
         let max_send_udp_payload_size = quiche_conn.max_send_udp_payload_size();
 
         let mut buf = vec![0; max_send_udp_payload_size];
 
-        let dispatcher = QuicConnDispatcher::new(quiche_conn, self.reactor.clone());
+        let dispatcher = QuicConnDispatcher::new(quiche_conn, reactor);
 
         loop {
             let (send_size, send_info) = dispatcher.send(&mut buf).await?;
@@ -90,7 +144,7 @@ impl QuicConnector {
 
                 let udp_socket = Arc::new(udp_socket);
 
-                spawn(Self::client_recv_loop(
+                spawn(client_recv_loop(
                     laddr,
                     udp_socket.clone(),
                     scid.clone(),
@@ -99,7 +153,7 @@ impl QuicConnector {
                     max_send_udp_payload_size,
                 ))?;
 
-                spawn(Self::client_send_loop(
+                spawn(client_send_loop(
                     udp_socket,
                     scid,
                     dcid,
@@ -111,94 +165,93 @@ impl QuicConnector {
             }
         }
     }
+}
 
-    async fn client_send_loop(
-        udp_socket: Arc<UdpSocket>,
-        scid: ConnectionId<'static>,
-        dcid: ConnectionId<'static>,
-        dispatcher: QuicConnDispatcher,
-        max_send_udp_payload_size: usize,
-    ) {
-        if let Err(err) =
-            Self::client_send_loop_prv(&udp_socket, &dispatcher, max_send_udp_payload_size).await
-        {
-            log::error!(
-                "QuicConn(client) send loop stopped, scid={:?}, dcid={:?}, err={}",
-                scid,
-                dcid,
-                err
-            );
-        } else {
-            log::info!(
-                "QuicConn(client) send loop stopped, scid={:?}, dcid={:?}",
-                scid,
-                dcid,
-            );
-        }
-
-        if let Err(err) = udp_socket.shutdown() {
-            log::error!(
-                "QuicConn(client): shutdown udp socket, scid={:?}, dcid={:?}, err={}",
-                scid,
-                dcid,
-                err
-            );
-        }
+async fn client_send_loop(
+    udp_socket: Arc<UdpSocket>,
+    scid: ConnectionId<'static>,
+    dcid: ConnectionId<'static>,
+    dispatcher: QuicConnDispatcher,
+    max_send_udp_payload_size: usize,
+) {
+    if let Err(err) =
+        client_send_loop_prv(&udp_socket, &dispatcher, max_send_udp_payload_size).await
+    {
+        log::error!(
+            "QuicConn(client) send loop stopped, scid={:?}, dcid={:?}, err={}",
+            scid,
+            dcid,
+            err
+        );
+    } else {
+        log::info!(
+            "QuicConn(client) send loop stopped, scid={:?}, dcid={:?}",
+            scid,
+            dcid,
+        );
     }
 
-    async fn client_send_loop_prv(
-        udp_socket: &UdpSocket,
-        dispatcher: &QuicConnDispatcher,
-        max_send_udp_payload_size: usize,
-    ) -> Result<()> {
-        let mut buf = vec![0; max_send_udp_payload_size];
-        loop {
-            let (send_size, send_info) = dispatcher.send(&mut buf).await?;
-
-            udp_socket.send_to(&buf[..send_size], send_info.to).await?;
-        }
+    if let Err(err) = udp_socket.shutdown() {
+        log::error!(
+            "QuicConn(client): shutdown udp socket, scid={:?}, dcid={:?}, err={}",
+            scid,
+            dcid,
+            err
+        );
     }
+}
 
-    async fn client_recv_loop(
-        laddr: SocketAddr,
-        udp_socket: Arc<UdpSocket>,
-        scid: ConnectionId<'static>,
-        dcid: ConnectionId<'static>,
-        dispatcher: QuicConnDispatcher,
-        max_send_udp_payload_size: usize,
-    ) {
-        if let Err(err) =
-            Self::client_recv_loop_prv(laddr, udp_socket, &dispatcher, max_send_udp_payload_size)
-                .await
-        {
-            log::error!(
-                "QuicConn(client) recv loop stopped, scid={:?}, dcid={:?}, err={}",
-                scid,
-                dcid,
-                err
-            );
-        } else {
-            log::info!(
-                "QuicConn(client) recv loop stopped, scid={:?}, dcid={:?}",
-                scid,
-                dcid,
-            );
-        }
+async fn client_send_loop_prv(
+    udp_socket: &UdpSocket,
+    dispatcher: &QuicConnDispatcher,
+    max_send_udp_payload_size: usize,
+) -> Result<()> {
+    let mut buf = vec![0; max_send_udp_payload_size];
+    loop {
+        let (send_size, send_info) = dispatcher.send(&mut buf).await?;
+
+        udp_socket.send_to(&buf[..send_size], send_info.to).await?;
     }
+}
 
-    async fn client_recv_loop_prv(
-        laddr: SocketAddr,
-        udp_socket: Arc<UdpSocket>,
-        dispatcher: &QuicConnDispatcher,
-        max_send_udp_payload_size: usize,
-    ) -> Result<()> {
-        let mut buf = vec![0; max_send_udp_payload_size];
-        loop {
-            let (recv_size, from) = udp_socket.recv_from(&mut buf).await?;
+async fn client_recv_loop(
+    laddr: SocketAddr,
+    udp_socket: Arc<UdpSocket>,
+    scid: ConnectionId<'static>,
+    dcid: ConnectionId<'static>,
+    dispatcher: QuicConnDispatcher,
+    max_send_udp_payload_size: usize,
+) {
+    if let Err(err) =
+        client_recv_loop_prv(laddr, udp_socket, &dispatcher, max_send_udp_payload_size).await
+    {
+        log::error!(
+            "QuicConn(client) recv loop stopped, scid={:?}, dcid={:?}, err={}",
+            scid,
+            dcid,
+            err
+        );
+    } else {
+        log::info!(
+            "QuicConn(client) recv loop stopped, scid={:?}, dcid={:?}",
+            scid,
+            dcid,
+        );
+    }
+}
 
-            dispatcher
-                .recv(&mut buf[..recv_size], RecvInfo { from, to: laddr })
-                .await?;
-        }
+async fn client_recv_loop_prv(
+    laddr: SocketAddr,
+    udp_socket: Arc<UdpSocket>,
+    dispatcher: &QuicConnDispatcher,
+    max_send_udp_payload_size: usize,
+) -> Result<()> {
+    let mut buf = vec![0; max_send_udp_payload_size];
+    loop {
+        let (recv_size, from) = udp_socket.recv_from(&mut buf).await?;
+
+        dispatcher
+            .recv(&mut buf[..recv_size], RecvInfo { from, to: laddr })
+            .await?;
     }
 }

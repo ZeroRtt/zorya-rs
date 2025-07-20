@@ -4,7 +4,7 @@ use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
 
 use futures_test::task::noop_context;
 use n3_spawner::spawn;
-use n3quic::{QuicConnExt, QuicConnector, QuicServer};
+use n3quic::{QuicConn, QuicConnExt, QuicConnector, QuicServer};
 use quiche::Config;
 
 fn mock_config(is_server: bool) -> Config {
@@ -58,7 +58,7 @@ async fn create_mock_server() -> Vec<SocketAddr> {
     // _ = pretty_env_logger::try_init_timed();
 
     let laddrs = repeat("127.0.0.1:0".parse().unwrap())
-        .take(10)
+        .take(20)
         .collect::<Vec<_>>();
 
     let mut listener = QuicServer::with_quiche_config(mock_config(true))
@@ -127,8 +127,7 @@ async fn create_mock_server() -> Vec<SocketAddr> {
 async fn echo_with_one_stream() {
     let raddrs = create_mock_server().await;
 
-    let client = QuicConnector::new(mock_config(false))
-        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+    let client = QuicConn::connect(None, raddrs[0], &mut mock_config(false))
         .await
         .unwrap();
 
@@ -149,8 +148,7 @@ async fn echo_with_one_stream() {
 async fn echo_with_streams() {
     let raddrs = create_mock_server().await;
 
-    let client = QuicConnector::new(mock_config(false))
-        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+    let client = QuicConn::connect(None, raddrs[0], &mut mock_config(false))
         .await
         .unwrap();
 
@@ -172,11 +170,10 @@ async fn echo_with_conns() {
 
     let mut buf = vec![0; 100];
 
+    let mut connector = QuicConnector::new(None, raddrs.as_slice(), mock_config(false)).unwrap();
+
     for _ in 0..30 {
-        let client = QuicConnector::new(mock_config(false))
-            .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
-            .await
-            .unwrap();
+        let client = connector.connect().await.unwrap();
 
         let stream = client.open().await.unwrap();
 
@@ -189,8 +186,7 @@ async fn echo_with_conns() {
 async fn max_streams() {
     let raddrs = create_mock_server().await;
 
-    let client = QuicConnector::new(mock_config(false))
-        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+    let client = QuicConn::connect(None, raddrs[0], &mut mock_config(false))
         .await
         .unwrap();
 
@@ -220,8 +216,7 @@ async fn max_streams() {
 async fn close_conn() {
     let raddrs = create_mock_server().await;
 
-    let client = QuicConnector::new(mock_config(false))
-        .connect(None, "127.0.0.1:0".parse().unwrap(), raddrs[0])
+    let client = QuicConn::connect(None, raddrs[0], &mut mock_config(false))
         .await
         .unwrap();
 

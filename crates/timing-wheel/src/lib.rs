@@ -218,16 +218,16 @@ mod tests {
         let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
 
         time_wheel
-            .deadline(time_wheel.start + Duration::from_millis(100), 1)
+            .deadline(time_wheel.start + Duration::from_millis(500), 1)
             .expect("deadline is valid.");
 
         time_wheel
-            .deadline(time_wheel.start + Duration::from_millis(200), 2)
+            .deadline(time_wheel.start + Duration::from_millis(1000), 2)
             .expect("deadline is valid.");
 
         assert_eq!(time_wheel.len(), 2);
 
-        sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(500));
 
         let mut wakers = vec![];
 
@@ -240,7 +240,7 @@ mod tests {
 
         assert_eq!(time_wheel.len(), 1);
 
-        sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(1000));
 
         time_wheel.spin(&mut wakers);
 

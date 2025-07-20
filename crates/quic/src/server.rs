@@ -54,7 +54,7 @@ struct QuicServerConfig {
     incoming_queue_size: usize,
 }
 
-/// Builder for [`QuicServer`]
+/// Builder for quic server sockets.
 pub struct QuicServer(Result<QuicServerConfig>);
 
 impl QuicServer {
@@ -308,7 +308,7 @@ impl QuicListenerDriver {
         let handshaking_conn_set = self.handshaking_conn_set.clone();
         let udp_group_sender = self.udp_group_sender.clone();
 
-        // start connection sending loop.
+        // io sending task.
         spawn(async move {
             if let Err(err) =
                 Self::conn_send_loop(udp_group_sender, dispatcher, max_send_udp_payload_size).await
@@ -320,6 +320,9 @@ impl QuicListenerDriver {
                 );
             }
 
+            // clearup:
+            // - try remove from handshaking set.
+            // - try remove from established set.
             handshaking_conn_set.remove(&scid);
             quiche_conn_set.remove(&scid);
 

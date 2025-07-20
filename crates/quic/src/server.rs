@@ -59,8 +59,10 @@ struct QuicServerConfig {
     validator: Option<Box<dyn AddressValidator + Sync + Send>>,
     /// expiration interval for retry token.
     retry_token_timeout: Duration,
-    /// The maximun unhandle incoming quic connection length.
+    /// The maximum unhandle incoming quic connection length.
     incoming_queue_size: usize,
+    /// The maximum number of active connections of this server can handles.
+    max_active_conn_size: usize,
 }
 
 /// Builder for quic server sockets.
@@ -74,6 +76,7 @@ impl QuicServer {
             validator: None,
             retry_token_timeout: Duration::from_secs(60),
             incoming_queue_size: 100,
+            max_active_conn_size: 500,
         }))
     }
 
@@ -84,9 +87,11 @@ impl QuicServer {
             validator: None,
             retry_token_timeout: Duration::from_secs(60),
             incoming_queue_size: 100,
+            max_active_conn_size: 500,
         }))
     }
 
+    /// Update the quiche `Config`
     pub fn quiche_config<F, E>(self, f: F) -> Self
     where
         F: FnOnce(&mut quiche::Config) -> std::result::Result<(), E>,
@@ -105,6 +110,17 @@ impl QuicServer {
 
         Self(self.0.and_then(|mut config| {
             config.incoming_queue_size = value - 1;
+
+            Ok(config)
+        }))
+    }
+
+    /// Set the maximum number of active connections that this server handles.
+    ///
+    /// Set this value to `0`, make this server reject any inbound connection.
+    pub fn max_active_conn_size(self, value: usize) -> Self {
+        Self(self.0.and_then(|mut config| {
+            config.max_active_conn_size = value;
 
             Ok(config)
         }))
@@ -171,6 +187,7 @@ impl QuicServer {
             incoming_sender,
             quiche_conn_set: quiche_conn_set.clone(),
             handshaking_conn_set: Default::default(),
+            max_active_conn_size: this.max_active_conn_size,
         };
 
         spawn(async move {
@@ -206,6 +223,8 @@ struct QuicListenerDriver {
     handshaking_conn_set: Arc<DashSet<ConnectionId<'static>>>,
     /// aliving quic streams.
     quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>>,
+    /// The maximum number of active connections that this server handles.
+    max_active_conn_size: usize,
 }
 
 impl QuicListenerDriver {
@@ -287,6 +306,17 @@ impl QuicListenerDriver {
                 header.scid,
                 header.dcid,
                 err
+            );
+            return Ok(());
+        }
+
+        // check `max_active_conn_size` condition.
+        if !(self.quiche_conn_set.len() < self.max_active_conn_size) {
+            log::warn!(
+                "QuicServer: the `max_active_conn_size` reached, trace_id={}, from={}, to={}",
+                quiche_conn.trace_id(),
+                recv_info.from,
+                recv_info.to
             );
             return Ok(());
         }
@@ -521,8 +551,6 @@ impl QuicListenerDriver {
 
                             return Err(Error::other(err.into_send_error()));
                         }
-
-                        log::trace!("====================");
                     }
                 }
             } else {

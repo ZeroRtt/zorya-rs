@@ -133,7 +133,7 @@ impl QuicConn {
 
         let mut buf = vec![0; max_send_udp_payload_size];
 
-        let dispatcher = QuicConnDispatcher::new(quiche_conn, reactor);
+        let dispatcher = QuicConnDispatcher::new(quiche_conn, reactor.clone());
 
         loop {
             let (send_size, send_info) = dispatcher.send(&mut buf).await?;
@@ -145,7 +145,11 @@ impl QuicConn {
             let timeout = dispatcher.0.lock().unwrap().quiche_conn.timeout();
 
             let (recv_size, from) = if let Some(timeout) = timeout {
-                match udp_socket.recv_from(&mut buf).timeout(timeout).await {
+                match udp_socket
+                    .recv_from(&mut buf)
+                    .timeout_with(timeout, reactor.clone())
+                    .await
+                {
                     Ok((recv_size, from)) => (recv_size, from),
                     Err(err) if err.kind() == ErrorKind::TimedOut => {
                         dispatcher.0.lock().unwrap().quiche_conn.on_timeout();

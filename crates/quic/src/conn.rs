@@ -1,6 +1,7 @@
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap, VecDeque},
+    fmt::Debug,
     io::{Error, ErrorKind, Result},
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -493,6 +494,17 @@ impl<'a> Future for ConnSend<'a> {
 
 /// Quic connection api.
 pub struct QuicConn(pub(crate) Arc<Mutex<QuicConnState>>);
+
+impl Debug for QuicConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.0.lock().unwrap();
+
+        f.debug_struct("QuicConn")
+            .field("is_server", &state.quiche_conn.is_server())
+            .field("trace_id", &state.quiche_conn.trace_id())
+            .finish()
+    }
+}
 
 impl Drop for QuicConn {
     fn drop(&mut self) {

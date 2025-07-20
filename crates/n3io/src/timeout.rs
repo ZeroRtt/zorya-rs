@@ -2,35 +2,31 @@
 
 use std::{
     io::{Error, Result},
+    pin::Pin,
     task::Poll,
     time::{Duration, Instant},
 };
 
-use futures::future::{BoxFuture, FutureExt};
 use mio::Token;
 
 use crate::reactor::Reactor;
 
 /// An extension trait to add `timeout[_with]` funcs to `futures`
-pub trait TimeoutExt<'a, T>: Future<Output = Result<T>> + Sized + Send + 'a {
+pub trait TimeoutExt: IntoFuture + Sized {
     #[cfg(feature = "global_reactor")]
     /// See [`TimeoutExt::timeout_with`]
-    fn timeout(self, duration: Duration) -> impl Future<Output = Self::Output> + Unpin {
+    fn timeout(self, duration: Duration) -> Timeout<Self::IntoFuture> {
         use crate::reactor::global_reactor;
 
-        Self::timeout_with(self, global_reactor().clone(), duration)
+        Self::timeout_with(self, duration, global_reactor().clone())
     }
 
     /// Wrap `self` as a cancelable future based on `deadline` timer.
-    fn timeout_with(
-        self,
-        reactor: Reactor,
-        duration: Duration,
-    ) -> impl Future<Output = Self::Output> + Unpin {
+    fn timeout_with(self, duration: Duration, reactor: Reactor) -> Timeout<Self::IntoFuture> {
         let deadline = Instant::now() + duration;
         let timer = reactor.deadline(deadline);
-        TimeoutFuture {
-            future: self.boxed(),
+        Timeout {
+            future: Box::pin(self.into_future()),
             timer,
             reactor,
             deadline,
@@ -38,16 +34,17 @@ pub trait TimeoutExt<'a, T>: Future<Output = Result<T>> + Sized + Send + 'a {
     }
 }
 
-impl<'a, F, T> TimeoutExt<'a, T> for F where F: Future<Output = Result<T>> + Sized + Send + 'a {}
+impl<F> TimeoutExt for F where F: IntoFuture {}
 
-struct TimeoutFuture<'a, T> {
-    future: BoxFuture<'a, Result<T>>,
+/// Future returned by [`timeout_with`](TimeoutExt::timeout_with)
+pub struct Timeout<Fut> {
+    future: Pin<Box<Fut>>,
     timer: Token,
     reactor: Reactor,
     deadline: Instant,
 }
 
-impl<'a, T> Drop for TimeoutFuture<'a, T> {
+impl<Fut> Drop for Timeout<Fut> {
     fn drop(&mut self) {
         if let Err(err) = self.reactor.deregister_timer(self.timer) {
             log::error!("failed to deregister timer({:?}).", err);
@@ -55,7 +52,10 @@ impl<'a, T> Drop for TimeoutFuture<'a, T> {
     }
 }
 
-impl<'a, T> Future for TimeoutFuture<'a, T> {
+impl<T, Fut> Future for Timeout<Fut>
+where
+    Fut: Future<Output = Result<T>>,
+{
     type Output = Result<T>;
 
     fn poll(

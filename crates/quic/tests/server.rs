@@ -1,7 +1,9 @@
 use std::{io::ErrorKind, iter::repeat, thread::sleep, time::Duration, vec};
 
+use futures::{AsyncReadExt, AsyncWriteExt};
+
 use n3io::timeout::TimeoutExt;
-use n3quic::{QuicConnector, QuicServer};
+use n3quic::{QuicConnExt, QuicConnector, QuicServer};
 use quiche::Config;
 
 fn mock_config(is_server: bool) -> Config {
@@ -120,4 +122,71 @@ async fn max_active_conn_size() {
             .kind(),
         ErrorKind::TimedOut
     );
+}
+
+#[futures_test::test]
+async fn server_drop_conn() {
+    let laddrs = repeat("127.0.0.1:0".parse().unwrap())
+        .take(20)
+        .collect::<Vec<_>>();
+
+    let mut listener = QuicServer::with_quiche_config(mock_config(true))
+        .bind(laddrs.as_slice())
+        .await
+        .unwrap();
+
+    let raddrs = listener.local_addrs().copied().collect::<Vec<_>>();
+
+    let mut connector = QuicConnector::new_with_config(raddrs.as_slice(), mock_config(false));
+
+    let outbound = connector.connect().await.unwrap();
+    let inbound = listener.accept().await.unwrap();
+
+    drop(inbound);
+
+    sleep(Duration::from_millis(200));
+
+    assert!(outbound.is_closed());
+
+    assert_eq!(listener.active_conns(), 0);
+}
+
+#[futures_test::test]
+async fn drop_inbound_stream() {
+    // _ = pretty_env_logger::try_init_timed();
+    let laddrs = repeat("127.0.0.1:0".parse().unwrap())
+        .take(20)
+        .collect::<Vec<_>>();
+
+    let mut listener = QuicServer::with_quiche_config(mock_config(true))
+        .bind(laddrs.as_slice())
+        .await
+        .unwrap();
+
+    let raddrs = listener.local_addrs().copied().collect::<Vec<_>>();
+
+    let mut connector = QuicConnector::new_with_config(raddrs.as_slice(), mock_config(false));
+
+    let outbound = connector.connect().await.unwrap();
+    let inbound = listener.accept().await.unwrap();
+
+    assert_eq!(outbound.active_outbound_streams(), Some(0));
+    assert_eq!(inbound.active_outbound_streams(), Some(0));
+
+    let mut outbound_stream = inbound.open().await.unwrap();
+
+    assert_eq!(outbound.active_outbound_streams(), Some(0));
+    assert_eq!(inbound.active_outbound_streams(), Some(2));
+
+    // really open a new outbound stream by sending non-zero length data.
+    outbound_stream.write_all(b"hello").await.unwrap();
+
+    // drop the incoming stream immediately.
+    drop(outbound.accept().await.unwrap());
+
+    let mut buf = vec![0; 100];
+
+    assert_eq!(outbound_stream.read(&mut buf).await.unwrap(), 0);
+
+    assert!(outbound_stream.is_finished());
 }

@@ -394,7 +394,7 @@ impl QuicConnDispatcher {
     ) -> Poll<Result<usize>> {
         let mut state = self.0.lock().unwrap();
 
-        let recv_size = match state.quiche_conn.recv(buf, info) {
+        let poll = match state.quiche_conn.recv(buf, info) {
             Ok(recv_size) => {
                 log::trace!(
                     "QuicConn({}): recv data, len={}, is_closed={}, is_draining={}",
@@ -404,7 +404,7 @@ impl QuicConnDispatcher {
                     state.quiche_conn.is_draining(),
                 );
 
-                recv_size
+                Poll::Ready(Ok(recv_size))
             }
             Err(err) => {
                 log::error!(
@@ -413,7 +413,7 @@ impl QuicConnDispatcher {
                     state.quiche_conn.trace_id(),
                     err
                 );
-                return Poll::Ready(Err(Error::other(err)));
+                Poll::Ready(Err(Error::other(err)))
             }
         };
 
@@ -434,7 +434,7 @@ impl QuicConnDispatcher {
             waker.wake();
         }
 
-        Poll::Ready(Ok(recv_size))
+        poll
     }
 }
 
@@ -513,6 +513,21 @@ impl Drop for QuicConn {
 }
 
 impl QuicConn {
+    /// Return the number of active streams.
+    pub fn active_outbound_streams(&self) -> Option<u64> {
+        let state = self.0.lock().unwrap();
+
+        state.quiche_conn.peer_transport_params().map(|params| {
+            params.initial_max_streams_bidi - state.quiche_conn.peer_streams_left_bidi()
+        })
+    }
+    /// Returns true if the connection is closed.
+    ///
+    /// If this returns true, the connection object can be dropped.
+    pub fn is_closed(&self) -> bool {
+        self.0.lock().unwrap().quiche_conn.is_closed()
+    }
+
     /// Close this connection.
     pub fn close(&self, err: u64, reason: &[u8]) -> Result<()> {
         let mut state = self.0.lock().unwrap();
@@ -770,6 +785,12 @@ impl QuicStream {
 
         Ok(())
     }
+
+    /// Returns true if all the data has been read from the specified stream.
+    pub fn is_finished(&self) -> bool {
+        self.1.lock().unwrap().quiche_conn.stream_finished(self.0)
+    }
+
     /// Attempt to write bytes from `buf` into the `stream_id`.
     pub fn poll_stream_write(
         &self,

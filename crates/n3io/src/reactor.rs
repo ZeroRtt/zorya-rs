@@ -452,7 +452,7 @@ mod global {
             }
 
             let (reactor, _) =
-                Reactor::with_background_thread(Duration::from_millis(50), 1024).unwrap();
+                Reactor::with_background_thread(Duration::from_millis(1), 1024).unwrap();
 
             reactor
         })

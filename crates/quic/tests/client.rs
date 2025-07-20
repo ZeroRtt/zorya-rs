@@ -95,34 +95,6 @@ async fn create_mock_server() -> Vec<SocketAddr> {
     raddrs
 }
 
-// static INIT: OnceLock<Vec<SocketAddr>> = OnceLock::new();
-
-// fn init() -> Vec<SocketAddr> {
-//     let mut addrs = INIT
-//         .get_or_init(|| {
-//             // _ = pretty_env_logger::try_init_timed();
-
-//             let (sender, receiver) = mpsc::channel();
-//             spawn(async move {
-//                 let raddrs = repeat("127.0.0.1:0".parse().unwrap())
-//                     .take(10)
-//                     .collect::<Vec<_>>();
-
-//                 sender
-//                     .send(create_mock_server(raddrs.as_slice()).await)
-//                     .unwrap();
-//             })
-//             .unwrap();
-
-//             receiver.recv().unwrap()
-//         })
-//         .clone();
-
-//     addrs.shuffle(&mut rand::rng());
-
-//     addrs
-// }
-
 #[futures_test::test]
 async fn echo_with_one_stream() {
     let raddrs = create_mock_server().await;
@@ -170,7 +142,7 @@ async fn echo_with_conns() {
 
     let mut buf = vec![0; 100];
 
-    let mut connector = QuicConnector::new(None, raddrs.as_slice(), mock_config(false)).unwrap();
+    let mut connector = QuicConnector::new_with_config(raddrs.as_slice(), mock_config(false));
 
     for _ in 0..30 {
         let client = connector.connect().await.unwrap();

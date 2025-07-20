@@ -474,7 +474,7 @@ impl QuicListenerDriver {
 
                 if self.handshaking_conn_set.contains(&header.dcid) {
                     if dispatcher.is_established() {
-                        log::info!(
+                        log::trace!(
                             "QuicServer(dispatch) established, trace_id={:?}, from={}, to={}",
                             header.dcid,
                             recv_info.from,

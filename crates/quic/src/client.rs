@@ -11,54 +11,85 @@ use rand::{rng, seq::SliceRandom};
 
 use crate::{QuicConn, QuicConnDispatcher, QuicConnDispatcherExt, random_conn_id};
 
-/// A builder for quic client sockets.
-pub struct QuicConnector {
+struct QuicConnectConfig {
     quiche_config: quiche::Config,
-    raddrs: Vec<SocketAddr>,
-    reactor: Reactor,
     server_name: Option<String>,
+    raddrs: Vec<SocketAddr>,
 }
 
+/// A builder for quic client sockets.
+pub struct QuicConnector(Result<QuicConnectConfig>);
+
 impl QuicConnector {
-    /// See [`new_with`](Self::new_with)
+    /// Create a new `QuicConnector` instance.
+    pub fn new<S: ToSocketAddrs>(raddrs: S) -> Self {
+        Self(raddrs.to_socket_addrs().and_then(|iter| {
+            Ok(QuicConnectConfig {
+                raddrs: iter.collect(),
+                quiche_config: quiche::Config::new(quiche::PROTOCOL_VERSION)
+                    .map_err(Error::other)?,
+                server_name: None,
+            })
+        }))
+    }
+
+    /// Create a new `QuicConnector` instance.
+    pub fn new_with_config<S: ToSocketAddrs>(raddrs: S, quiche_config: quiche::Config) -> Self {
+        Self(raddrs.to_socket_addrs().and_then(|iter| {
+            Ok(QuicConnectConfig {
+                raddrs: iter.collect(),
+                quiche_config,
+                server_name: None,
+            })
+        }))
+    }
+
+    /// Configure the `server_name` parameter, which is used to verify the peer's
+    /// certificate.
+    pub fn server_name(self, name: impl AsRef<str>) -> Self {
+        Self(self.0.and_then(|mut config| {
+            config.server_name = Some(name.as_ref().to_owned());
+            Ok(config)
+        }))
+    }
+
+    /// Update quic config.
+    pub fn quiche_config<F, E>(self, f: F) -> Self
+    where
+        F: FnOnce(&mut quiche::Config) -> std::result::Result<(), E>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        Self(self.0.and_then(|mut config| {
+            f(&mut config.quiche_config).map_err(|err| Error::other(err))?;
+
+            Ok(config)
+        }))
+    }
+
+    /// See [`connect_with`](Self::connect_with)
     #[cfg(feature = "global_reactor")]
-    pub fn new<S: ToSocketAddrs>(
-        server_name: Option<&str>,
-        raddrs: S,
-        config: quiche::Config,
-    ) -> Result<Self> {
+    pub async fn connect(&mut self) -> Result<QuicConn> {
         use n3io::reactor::global_reactor;
 
-        Self::new_with(server_name, raddrs, config, global_reactor().clone())
-    }
-    /// Create a new `QuicConnector` instance.
-    pub fn new_with<S: ToSocketAddrs>(
-        server_name: Option<&str>,
-        raddrs: S,
-        config: quiche::Config,
-        reactor: Reactor,
-    ) -> Result<Self> {
-        let raddrs = raddrs.to_socket_addrs()?.collect();
-
-        Ok(Self {
-            quiche_config: config,
-            raddrs,
-            reactor,
-            server_name: server_name.map(|v| v.to_owned()),
-        })
+        self.connect_with(global_reactor().clone()).await
     }
 
     /// Create a new client socket and issue a non-blocking connect to a random address in the address pool.
     ///
     /// see [`QuicConn::connect`]
-    pub async fn connect(&mut self) -> Result<QuicConn> {
-        self.raddrs.shuffle(&mut rng());
+    pub async fn connect_with(&mut self, reactor: Reactor) -> Result<QuicConn> {
+        let config = self
+            .0
+            .as_mut()
+            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+
+        config.raddrs.shuffle(&mut rng());
 
         QuicConn::connect_with(
-            self.server_name.as_deref(),
-            self.raddrs[0],
-            &mut self.quiche_config,
-            self.reactor.clone(),
+            config.server_name.as_deref(),
+            config.raddrs[0],
+            &mut config.quiche_config,
+            reactor,
         )
         .await
     }

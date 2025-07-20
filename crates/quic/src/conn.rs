@@ -582,6 +582,43 @@ impl QuicConn {
         Poll::Pending
     }
 
+    /// Try to open a outbound stream without waiting.
+    ///
+    /// Returns error, if `peer_streams_left_bidi == 0`
+    pub fn try_open(&self) -> Result<QuicStream> {
+        let mut state = self.0.lock().unwrap();
+
+        if state.quiche_conn.peer_streams_left_bidi() > 0 {
+            let stream_id = state.outbound_bidi_stream_id_next;
+            state.outbound_bidi_stream_id_next += 4;
+
+            // this a trick, func `stream_priority` will created the target if did not exist.
+            state
+                .quiche_conn
+                .stream_priority(stream_id, 255, true)
+                .map_err(|err| Error::other(err))?;
+
+            log::trace!(
+                "QuicConn({}) open new outbound stream, stream_id={}, trace_id={}",
+                state.quiche_conn.is_server(),
+                stream_id,
+                state.quiche_conn.trace_id()
+            );
+
+            if let Some(waker) = state.send_waker.take() {
+                drop(state);
+                waker.wake();
+            }
+
+            return Ok(QuicStream(stream_id, self.0.clone()));
+        }
+
+        return Err(Error::new(
+            ErrorKind::ResourceBusy,
+            "peer_streams_left_bidi == 0",
+        ));
+    }
+
     /// Open a new outbound stream.
     pub fn poll_stream_open(&self, cx: &mut Context<'_>) -> Poll<Result<QuicStream>> {
         let mut state = self.0.lock().unwrap();

@@ -6,7 +6,7 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
-use futures::{SinkExt, StreamExt, channel::mpsc};
+use futures::{StreamExt, channel::mpsc};
 use n3_spawner::spawn;
 use n3io::{
     net::udp_group::{self, UdpGroupReceiver, UdpGroupSender},
@@ -20,24 +20,33 @@ use crate::{
 };
 
 /// Server socket for quic.
-pub struct QuicListener(mpsc::Receiver<QuicConn>, Vec<SocketAddr>);
+pub struct QuicListener {
+    incoming: mpsc::Receiver<QuicConn>,
+    laddrs: Vec<SocketAddr>,
+    quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>>,
+}
 
 impl QuicListener {
     /// Returns A iterator over local bound addresses.
     pub fn local_addrs(&self) -> impl Iterator<Item = &SocketAddr> {
-        self.1.iter()
+        self.laddrs.iter()
+    }
+
+    /// Returns the count of the active connections.
+    pub fn active_conns(&self) -> usize {
+        self.quiche_conn_set.len()
     }
 
     /// Accepts a new `QUIC` connection.
     ///
     /// If an accepted stream is returned, the remote address of the peer is returned along with it.
     pub async fn accept(&mut self) -> Result<QuicConn> {
-        if let Some(next) = self.0.next().await {
+        if let Some(next) = self.incoming.next().await {
             Ok(next)
         } else {
             Err(Error::new(
                 ErrorKind::BrokenPipe,
-                format!("Quic listener({:?}) shutdown.", self.0),
+                format!("Quic listener is shutdown."),
             ))
         }
     }
@@ -92,8 +101,10 @@ impl QuicServer {
 
     /// Update the `maximun unhandle incoming connection size`, the default value is `100`.
     pub fn incoming_queue_size(self, value: usize) -> Self {
+        assert!(value > 0, "`incoming_queue_size` is set to `0`");
+
         Self(self.0.and_then(|mut config| {
-            config.incoming_queue_size = value;
+            config.incoming_queue_size = value - 1;
 
             Ok(config)
         }))
@@ -148,6 +159,9 @@ impl QuicServer {
 
         let (incoming_sender, incoming_receiver) = mpsc::channel(this.incoming_queue_size);
 
+        let quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>> =
+            Default::default();
+
         let server = QuicListenerDriver {
             reactor,
             udp_group_sender,
@@ -155,7 +169,7 @@ impl QuicServer {
             config: this.config,
             validator,
             incoming_sender,
-            quiche_conn_set: Default::default(),
+            quiche_conn_set: quiche_conn_set.clone(),
             handshaking_conn_set: Default::default(),
         };
 
@@ -167,7 +181,11 @@ impl QuicServer {
             }
         })?;
 
-        Ok(QuicListener(incoming_receiver, laddrs))
+        Ok(QuicListener {
+            incoming: incoming_receiver,
+            laddrs,
+            quiche_conn_set,
+        })
     }
 }
 
@@ -482,10 +500,29 @@ impl QuicListenerDriver {
                         );
 
                         self.handshaking_conn_set.remove(&header.dcid);
-                        self.incoming_sender
-                            .send(QuicConn(dispatcher.0.clone()))
-                            .await
-                            .map_err(Error::other)?;
+
+                        // Safety: if `try_send` func returns error, the `QuicConn` instance will
+                        // automatic drop connection resources, includes:
+                        //
+                        // - stop send/recv io tasks.
+                        // - remove associated dispatcher from tracking table.
+                        let conn = QuicConn(dispatcher.0.clone());
+
+                        if let Err(err) = self.incoming_sender.try_send(conn) {
+                            if err.is_full() {
+                                log::warn!(
+                                    "QuicServer: incoming queue is full, drop new conn, trace_id={:?}, from={}, to={}",
+                                    header.dcid,
+                                    recv_info.from,
+                                    recv_info.to
+                                );
+                                continue;
+                            }
+
+                            return Err(Error::other(err.into_send_error()));
+                        }
+
+                        log::trace!("====================");
                     }
                 }
             } else {

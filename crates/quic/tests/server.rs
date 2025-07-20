@@ -1,7 +1,6 @@
-use std::{io::Result, iter::repeat, vec};
+use std::{io::Result, iter::repeat, thread::sleep, time::Duration, vec};
 
-use futures::AsyncReadExt;
-use n3quic::{QuicConnExt, QuicConnector, QuicListener, QuicServer};
+use n3quic::{QuicConnector, QuicListener, QuicServer};
 use quiche::Config;
 
 fn mock_config(is_server: bool) -> Config {
@@ -46,7 +45,7 @@ fn mock_config(is_server: bool) -> Config {
 
     config.set_application_protos(&[b"test"]).unwrap();
 
-    config.set_max_idle_timeout(1000);
+    config.set_max_idle_timeout(60000);
 
     config
 }
@@ -59,7 +58,7 @@ async fn create_server() -> Result<QuicListener> {
         .collect::<Vec<_>>();
 
     QuicServer::with_quiche_config(mock_config(true))
-        .incoming_queue_size(2)
+        .incoming_queue_size(3)
         .bind(laddrs.as_slice())
         .await
 }
@@ -71,18 +70,17 @@ async fn max_conns() {
 
     let mut connector = QuicConnector::new_with_config(raddrs.as_slice(), mock_config(false));
 
-    // let mut conns = vec![];
+    let mut conns = vec![];
 
-    // // maxinum incoming queue is 2.
-    // for _ in 0..4 {
-    //     conns.push(connector.connect().await.unwrap());
-    // }
+    // maxinum incoming queue is 3.
+    for _ in 0..10 {
+        conns.push(connector.connect().await.unwrap());
+    }
 
-    let conn = connector.connect().await.unwrap();
+    // wait for clearup.
+    while listener.active_conns() != 3 {
+        sleep(Duration::from_millis(100));
+    }
 
-    let mut stream = conn.open().await.unwrap();
-
-    let mut buf = vec![0; 100];
-
-    stream.read(&mut buf).await.unwrap();
+    assert_eq!(listener.active_conns(), 3);
 }

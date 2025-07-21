@@ -1,6 +1,6 @@
 [package]
 description = "A quic/http3 reverse proxy"
-documentation = "https://docs.rs/n3quic"
+documentation = "https://docs.rs/n3"
 edition = "2024"
 license = "MIT"
 name = "n3"

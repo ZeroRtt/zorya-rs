@@ -115,12 +115,13 @@ impl QuicConn {
         reactor: Reactor,
     ) -> Result<Self> {
         let laddr: SocketAddr = if raddr.is_ipv4() {
-            "127.0.0.1:0".parse().unwrap()
+            "0.0.0.0:0".parse().unwrap()
         } else {
-            "[::1]:0".parse().unwrap()
+            "[::]:0".parse().unwrap()
         };
 
         let udp_socket = UdpSocket::bind_with(laddr, reactor.clone()).await?;
+
         let laddr = udp_socket.mio_socket().local_addr()?;
 
         let scid = random_conn_id();

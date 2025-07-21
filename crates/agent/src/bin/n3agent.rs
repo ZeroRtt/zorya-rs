@@ -131,7 +131,7 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
                     .map_err(|err| {
                         Error::new(
                             ErrorKind::NotFound,
-                            format!("Unable to load key file {:?}, {}", cli.cert, err),
+                            format!("Unable to load key file {:?}, {}", cli.key, err),
                         )
                     })?;
 

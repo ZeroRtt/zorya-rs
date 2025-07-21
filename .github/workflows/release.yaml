@@ -36,7 +36,7 @@ jobs:
           registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   upload-assets:
-    needs: [create-release, publish]
+    needs: [create-release]
     strategy:
       matrix:
         include:
@@ -81,6 +81,6 @@ jobs:
           #     - $target - Target triple.
           #     - $tag    - Tag of this release.
           # When multiple binary names are specified, default archive name or $bin variable cannot be used.
-          archive: $bin-$target-$tag
+          archive: n3-$target-$tag
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}

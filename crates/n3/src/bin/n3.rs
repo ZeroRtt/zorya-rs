@@ -70,6 +70,13 @@ struct Cli {
     #[arg(short, long, value_name = "PEM_FILE")]
     verify_peer: Option<PathBuf>,
 
+    /// Sets the quiche `initial_max_streams_bidi` transport parameter.
+    ///
+    /// When set to a non-zero value quiche will only allow v number of concurrent remotely-initiated bidirectional
+    /// streams to be open at any given time and will increase the limit automatically as streams are completed.
+    #[arg(short, long, value_name = "STREAMS", default_value_t = 100)]
+    max_streams: u64,
+
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
     debug: bool,
@@ -132,59 +139,58 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
 
     N3::new(target)
         .quic_server(|quic_server| {
-            quic_server.quiche_config(|config| {
-                config.set_initial_max_data(10_000_000);
-                config.set_initial_max_stream_data_bidi_local(1024 * 1024);
-                config.set_initial_max_stream_data_bidi_remote(1024 * 1024);
-                config.set_initial_max_streams_bidi(100);
-                config.set_initial_max_streams_uni(100);
+            quic_server
+                .verify_peer(cli.verify_peer.is_some())
+                .quiche_config(|config| {
+                    config.set_initial_max_data(10_000_000);
+                    config.set_initial_max_stream_data_bidi_local(1024 * 1024);
+                    config.set_initial_max_stream_data_bidi_remote(1024 * 1024);
+                    config.set_initial_max_streams_bidi(cli.max_streams);
 
-                config
-                    .load_cert_chain_from_pem_file(cli.cert.to_str().unwrap())
-                    .map_err(|err| {
+                    config
+                        .load_cert_chain_from_pem_file(cli.cert.to_str().unwrap())
+                        .map_err(|err| {
+                            Error::new(
+                                ErrorKind::NotFound,
+                                format!(
+                                    "Unable to load certificate chain file {:?}, {}",
+                                    cli.cert, err
+                                ),
+                            )
+                        })?;
+
+                    config
+                        .load_priv_key_from_pem_file(cli.key.to_str().unwrap())
+                        .map_err(|err| {
+                            Error::new(
+                                ErrorKind::NotFound,
+                                format!("Unable to load key file {:?}, {}", cli.cert, err),
+                            )
+                        })?;
+
+                    if let Some(ca) = &cli.verify_peer {
+                        config
+                            .load_verify_locations_from_file(ca.to_str().unwrap())
+                            .map_err(|err| {
+                                Error::new(
+                                    ErrorKind::NotFound,
+                                    format!("Unable to trusted CA file {:?}, {}", cli.cert, err),
+                                )
+                            })?;
+                    }
+
+                    config.set_application_protos(&protos).map_err(|err| {
                         Error::new(
-                            ErrorKind::NotFound,
+                            ErrorKind::InvalidInput,
                             format!(
-                                "Unable to load certificate chain file {:?}, {}",
-                                cli.cert, err
+                                "failed to set application protos as {:?}, {}",
+                                cli.protos, err
                             ),
                         )
                     })?;
 
-                config
-                    .load_priv_key_from_pem_file(cli.key.to_str().unwrap())
-                    .map_err(|err| {
-                        Error::new(
-                            ErrorKind::NotFound,
-                            format!("Unable to load key file {:?}, {}", cli.cert, err),
-                        )
-                    })?;
-
-                if let Some(ca) = &cli.verify_peer {
-                    config
-                        .load_verify_locations_from_file(ca.to_str().unwrap())
-                        .map_err(|err| {
-                            Error::new(
-                                ErrorKind::NotFound,
-                                format!("Unable to trusted CA file {:?}, {}", cli.cert, err),
-                            )
-                        })?;
-
-                    config.verify_peer(true);
-                }
-
-                config.set_application_protos(&protos).map_err(|err| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "failed to set application protos as {:?}, {}",
-                            cli.protos, err
-                        ),
-                    )
-                })?;
-
-                Ok(())
-            })
+                    Ok(())
+                })
         })
         .bind(laddrs.as_slice())
         .await

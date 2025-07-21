@@ -637,20 +637,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "n3"
-version = "0.1.1"
-dependencies = [
- "clap",
- "color-print",
- "futures",
- "log",
- "n3-spawner",
- "n3io",
- "n3quic",
- "pretty_env_logger",
-]
-
-[[package]]
 name = "n3-spawner"
 version = "0.1.0"
 dependencies = [
@@ -701,6 +687,20 @@ dependencies = [
  "pretty_env_logger",
  "quiche",
  "rand",
+]
+
+[[package]]
+name = "n3server"
+version = "0.1.1"
+dependencies = [
+ "clap",
+ "color-print",
+ "futures",
+ "log",
+ "n3-spawner",
+ "n3io",
+ "n3quic",
+ "pretty_env_logger",
 ]
 
 [[package]]

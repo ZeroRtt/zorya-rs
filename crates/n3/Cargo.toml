@@ -1,9 +1,9 @@
 [package]
 description = "A quic/http3 reverse proxy"
-documentation = "https://docs.rs/n3"
+documentation = "https://docs.rs/n3server"
 edition = "2024"
 license = "MIT"
-name = "n3"
+name = "n3server"
 repository = "https://github.com/quic-lab/n3/crates/n3"
 version = "0.1.1"
 

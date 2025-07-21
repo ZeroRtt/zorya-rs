@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use color_print::ceprintln;
 use futures::executor::block_on;
 
-use n3::N3;
+use n3server::N3;
 
 fn parse_port_range(arg: &str) -> std::result::Result<Range<u16>, String> {
     let parts = arg.split(":").collect::<Vec<_>>();

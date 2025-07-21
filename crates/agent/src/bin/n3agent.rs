@@ -58,7 +58,7 @@ struct Cli {
     n3_port_range: Range<u16>,
 
     /// Configure the certificate chain file(PEM).
-    #[arg(short, long, value_name = "PEM_FILE", default_value = "n3.crt")]
+    #[arg(short, long, value_name = "PEM_FILE")]
     cert: Option<PathBuf>,
 
     /// Configure the private chain file(PEM).

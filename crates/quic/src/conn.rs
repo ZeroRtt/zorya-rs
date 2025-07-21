@@ -521,6 +521,15 @@ impl QuicConn {
             params.initial_max_streams_bidi - state.quiche_conn.peer_streams_left_bidi()
         })
     }
+
+    /// Access the inner quiche::Connection instance.
+    pub fn quiche_conn<F, O>(&self, f: F) -> O
+    where
+        F: FnOnce(&quiche::Connection) -> O,
+    {
+        f(&self.0.lock().unwrap().quiche_conn)
+    }
+
     /// Returns true if the connection is closed.
     ///
     /// If this returns true, the connection object can be dropped.
@@ -641,7 +650,7 @@ impl QuicConn {
         }
 
         return Err(Error::new(
-            ErrorKind::ResourceBusy,
+            ErrorKind::WouldBlock,
             "peer_streams_left_bidi == 0",
         ));
     }
@@ -786,6 +795,11 @@ impl QuicStream {
         Ok(())
     }
 
+    /// Returns id value of this stream.
+    pub fn id(&self) -> u64 {
+        self.0
+    }
+
     /// Returns true if all the data has been read from the specified stream.
     pub fn is_finished(&self) -> bool {
         self.1.lock().unwrap().quiche_conn.stream_finished(self.0)
@@ -893,10 +907,10 @@ impl QuicStream {
     /// Helper method for splitting the quic stream into two halves.
     ///
     /// The two halves returned implement the AsyncRead and AsyncWrite traits, respectively.
-    pub fn split(self) -> (QuicStreamReader, QuicStreamWriter) {
+    pub fn split(self) -> (QuicStreamWriter, QuicStreamReader) {
         let this = Arc::new(self);
 
-        (QuicStreamReader(this.clone()), QuicStreamWriter(this))
+        (QuicStreamWriter(this.clone()), QuicStreamReader(this))
     }
 }
 

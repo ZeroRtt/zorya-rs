@@ -54,13 +54,12 @@ impl QuicConnector {
     }
 
     /// Update quic config.
-    pub fn quiche_config<F, E>(self, f: F) -> Self
+    pub fn quiche_config<F>(self, f: F) -> Self
     where
-        F: FnOnce(&mut quiche::Config) -> std::result::Result<(), E>,
-        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+        F: FnOnce(&mut quiche::Config) -> Result<()>,
     {
         Self(self.0.and_then(|mut config| {
-            f(&mut config.quiche_config).map_err(|err| Error::other(err))?;
+            f(&mut config.quiche_config)?;
 
             Ok(config)
         }))

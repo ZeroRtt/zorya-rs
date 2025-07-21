@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     io::{Error, ErrorKind, Result},
     net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
@@ -63,6 +64,18 @@ struct QuicServerConfig {
     incoming_queue_size: usize,
     /// The maximum number of active connections of this server can handles.
     max_active_conn_size: usize,
+    /// Configures wether to verify the peer’s certificate.
+    verify_peer: bool,
+}
+
+impl Debug for QuicServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicServerConfig")
+            .field("retry_token_timeout", &self.retry_token_timeout)
+            .field("incoming_queue_size", &self.incoming_queue_size)
+            .field("max_active_conn_size", &self.max_active_conn_size)
+            .finish()
+    }
 }
 
 /// Builder for quic server sockets.
@@ -77,6 +90,7 @@ impl QuicServer {
             retry_token_timeout: Duration::from_secs(60),
             incoming_queue_size: 100,
             max_active_conn_size: 500,
+            verify_peer: false,
         }))
     }
 
@@ -88,17 +102,27 @@ impl QuicServer {
             retry_token_timeout: Duration::from_secs(60),
             incoming_queue_size: 100,
             max_active_conn_size: 500,
+            verify_peer: false,
+        }))
+    }
+
+    /// Configures wether to verify the peer’s certificate.
+    pub fn verify_peer(self, value: bool) -> Self {
+        Self(self.0.and_then(|mut config| {
+            config.verify_peer = value;
+            config.config.verify_peer(value);
+
+            Ok(config)
         }))
     }
 
     /// Update the quiche `Config`
-    pub fn quiche_config<F, E>(self, f: F) -> Self
+    pub fn quiche_config<F>(self, f: F) -> Self
     where
-        F: FnOnce(&mut quiche::Config) -> std::result::Result<(), E>,
-        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+        F: FnOnce(&mut quiche::Config) -> Result<()>,
     {
         Self(self.0.and_then(|mut config| {
-            f(&mut config.config).map_err(|err| Error::other(err))?;
+            f(&mut config.config)?;
 
             Ok(config)
         }))
@@ -188,13 +212,14 @@ impl QuicServer {
             quiche_conn_set: quiche_conn_set.clone(),
             handshaking_conn_set: Default::default(),
             max_active_conn_size: this.max_active_conn_size,
+            verify_peer: this.verify_peer,
         };
 
         spawn(async move {
             if let Err(err) = server.run().await {
                 log::error!("listener stopped with error: {}", err);
             } else {
-                log::info!("listener stopped.",);
+                log::trace!("listener stopped.",);
             }
         })?;
 
@@ -225,6 +250,8 @@ struct QuicListenerDriver {
     quiche_conn_set: Arc<DashMap<ConnectionId<'static>, QuicConnDispatcher>>,
     /// The maximum number of active connections that this server handles.
     max_active_conn_size: usize,
+    /// Wether to verify the peer’s certificate.
+    verify_peer: bool,
 }
 
 impl QuicListenerDriver {
@@ -275,7 +302,7 @@ impl QuicListenerDriver {
             &mut self.config,
         ) {
             Ok(conn) => {
-                log::info!(
+                log::trace!(
                     "QuicServer(initial) accept new conn, from={:?}, to={}, scid={:?}, dcid={:?}, odcid={:?}",
                     recv_info.from,
                     recv_info.to,
@@ -326,7 +353,7 @@ impl QuicListenerDriver {
             self.handshaking_conn_set
                 .insert(header.dcid.clone().into_owned());
 
-            log::info!(
+            log::trace!(
                 "QuicServer(initial) wait handshaking, from={:?}, to={}, scid={:?}, dcid={:?}",
                 recv_info.from,
                 recv_info.to,
@@ -334,7 +361,7 @@ impl QuicListenerDriver {
                 header.dcid,
             );
         } else {
-            log::info!(
+            log::trace!(
                 "QuicServer(initial) established, from={:?}, to={}, scid={:?}, dcid={:?}",
                 recv_info.from,
                 recv_info.to,
@@ -537,6 +564,16 @@ impl QuicListenerDriver {
                         // - stop send/recv io tasks.
                         // - remove associated dispatcher from tracking table.
                         let conn = QuicConn(dispatcher.0.clone());
+
+                        if self.verify_peer && conn.quiche_conn(|conn| conn.peer_cert().is_none()) {
+                            log::warn!(
+                                "QuicServer: failed to verfy peer, trace_id={:?}, from={}, to={}, err=anonymous client",
+                                header.dcid,
+                                recv_info.from,
+                                recv_info.to
+                            );
+                            continue;
+                        }
 
                         if let Err(err) = self.incoming_sender.try_send(conn) {
                             if err.is_full() {

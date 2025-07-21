@@ -2,6 +2,7 @@ use std::{
     future::poll_fn,
     io::{ErrorKind, Read, Result, Write},
     net::SocketAddr,
+    sync::Arc,
 };
 
 use futures::{AsyncRead, AsyncWrite};
@@ -55,6 +56,69 @@ impl TcpStream {
             mio_tcp_stream,
             reactor,
         })
+    }
+
+    /// Helper method for splitting the quic stream into two halves.
+    ///
+    /// The two halves returned implement the AsyncRead and AsyncWrite traits, respectively.
+    pub fn split(self) -> (TcpStreamWriter, TcpStreamReader) {
+        let this = Arc::new(self);
+
+        (TcpStreamWriter(this.clone()), TcpStreamReader(this))
+    }
+}
+
+/// Write half of tcp socket.
+pub struct TcpStreamWriter(Arc<TcpStream>);
+
+impl AsyncWrite for TcpStreamWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize>> {
+        self.0
+            .reactor
+            .poll_io(cx, self.0.token, Interest::WRITABLE, None, |_| {
+                (&self.0.as_ref().mio_tcp_stream).write(buf)
+            })
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<()>> {
+        self.0
+            .reactor
+            .poll_io(cx, self.0.token, Interest::WRITABLE, None, |_| {
+                (&self.0.as_ref().mio_tcp_stream).flush()
+            })
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<()>> {
+        (&self.0.as_ref().mio_tcp_stream).shutdown(std::net::Shutdown::Both)?;
+
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// Read half of tcp socket.
+pub struct TcpStreamReader(Arc<TcpStream>);
+
+impl AsyncRead for TcpStreamReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<Result<usize>> {
+        self.0
+            .reactor
+            .poll_io(cx, self.0.token, Interest::READABLE, None, |_| {
+                (&self.0.as_ref().mio_tcp_stream).read(&mut *buf)
+            })
     }
 }
 

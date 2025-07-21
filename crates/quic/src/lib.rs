@@ -16,3 +16,6 @@ pub use conn::*;
 
 mod client;
 pub use client::*;
+
+/// re-export quiche.
+pub use quiche;

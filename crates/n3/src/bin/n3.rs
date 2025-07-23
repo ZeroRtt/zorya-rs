@@ -94,7 +94,7 @@ struct Cli {
     max_idle_timeout: u64,
 
     /// Sets the `max_ack_delay` transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 500)]
+    #[arg(long, value_name = "SIZE", default_value_t = 50)]
     max_ack_delay: u64,
 
     /// Debug mode, print verbose output informations.
@@ -162,9 +162,8 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
             quic_server
                 .verify_peer(cli.verify_peer.is_some())
                 .quiche_config(|config| {
-                    config.set_initial_max_data(10_000_000);
-                    // config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
-                    config.set_initial_max_stream_data_bidi_remote(cli.max_stream_data_bidi);
+                    config.set_initial_max_data(cli.max_stream_data_bidi * cli.max_streams);
+                    config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
                     config.set_initial_max_streams_bidi(cli.max_streams);
                     config.set_max_idle_timeout(cli.max_idle_timeout);
                     config.set_max_ack_delay(cli.max_ack_delay);

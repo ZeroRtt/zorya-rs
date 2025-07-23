@@ -82,8 +82,15 @@ struct Cli {
     max_idle_timeout: u64,
 
     /// Sets the `max_ack_delay` transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 500)]
+    #[arg(long, value_name = "SIZE", default_value_t = 50)]
     max_ack_delay: u64,
+
+    /// Sets the quiche `initial_max_streams_bidi` transport parameter.
+    ///
+    /// When set to a non-zero value quiche will only allow v number of concurrent remotely-initiated bidirectional
+    /// streams to be open at any given time and will increase the limit automatically as streams are completed.
+    #[arg(long, value_name = "STREAMS", default_value_t = 100)]
+    max_streams: u64,
 
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
@@ -128,8 +135,9 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
     Agent::new(n3_addrs.as_slice())
         .connector(|connector| {
             connector.quiche_config(|config| {
-                config.set_initial_max_data(10_000_000);
+                config.set_initial_max_data(cli.max_stream_data_bidi * cli.max_streams);
                 config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
+                config.set_initial_max_streams_bidi(cli.max_streams);
                 config.set_max_idle_timeout(cli.max_idle_timeout);
                 config.set_max_ack_delay(cli.max_ack_delay);
 

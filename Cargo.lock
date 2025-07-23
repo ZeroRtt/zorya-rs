@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "n3-spawner"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "num_cpus",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "n3quic"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "boring",
  "cooked-waker",

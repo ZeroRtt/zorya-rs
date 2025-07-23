@@ -534,11 +534,12 @@ impl QuicListenerDriver {
                 read_size
             );
 
-            if let Some(dispatcher) = self
+            let dispatcher = self
                 .quiche_conn_set
                 .get(&header.dcid)
-                .map(|conn| conn.clone())
-            {
+                .map(|conn| conn.clone());
+
+            if let Some(dispatcher) = dispatcher {
                 if let Err(err) = dispatcher.recv(&mut buf[..read_size], recv_info).await {
                     log::error!(
                         "Failed to dispatch received packet, trace_id={:?}, err={}",

@@ -15,8 +15,9 @@ where
 {
     THREAD_POOL
         .get_or_init(|| {
+            let cpus = num_cpus::get();
             ThreadPool::builder()
-                .pool_size(num_cpus::get())
+                .pool_size(if cpus < 10 { 10 } else { cpus })
                 .create()
                 .unwrap()
         })

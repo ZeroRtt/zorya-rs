@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.5] - 2025-07-23
+
+- n3: set_initial_max_stream_data_bidi_local/set_initial_max_stream_data_bidi_remote bug.
+
 ## [0.1.4] - 2025-07-23
 
 - n3/n3agent: adjust default quic parameters.

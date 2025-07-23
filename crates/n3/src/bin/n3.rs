@@ -163,7 +163,7 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
                 .verify_peer(cli.verify_peer.is_some())
                 .quiche_config(|config| {
                     config.set_initial_max_data(cli.max_stream_data_bidi * cli.max_streams);
-                    config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
+                    config.set_initial_max_stream_data_bidi_remote(cli.max_stream_data_bidi);
                     config.set_initial_max_streams_bidi(cli.max_streams);
                     config.set_max_idle_timeout(cli.max_idle_timeout);
                     config.set_max_ack_delay(cli.max_ack_delay);

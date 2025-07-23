@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.3] - 2025-07-23
+
+- n3/n3agent: add `max_ack_delay` configuration parameter.
+
 ## [0.1.1] - 2025-07-23
 
 - n3io: try to fix lossing close/shutdown event bug.

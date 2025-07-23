@@ -81,6 +81,10 @@ struct Cli {
     #[arg(long, value_name = "SIZE", default_value_t = 60 * 1000)]
     max_idle_timeout: u64,
 
+    /// Sets the `max_ack_delay` transport parameter, in milliseconds.
+    #[arg(long, value_name = "SIZE", default_value_t = 500)]
+    max_ack_delay: u64,
+
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
     debug: bool,
@@ -126,8 +130,8 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
             connector.quiche_config(|config| {
                 config.set_initial_max_data(10_000_000);
                 config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
-                // config.set_initial_max_stream_data_bidi_remote(cli.max_stream_data_bidi);
                 config.set_max_idle_timeout(cli.max_idle_timeout);
+                config.set_max_ack_delay(cli.max_ack_delay);
 
                 if let Some(cert) = &cli.cert {
                     config

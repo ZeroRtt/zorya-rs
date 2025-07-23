@@ -116,7 +116,7 @@ async fn max_active_conn_size() {
     assert_eq!(
         connector
             .connect()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(1))
             .await
             .expect_err("timeout")
             .kind(),

@@ -515,10 +515,9 @@ impl Drop for QuicConn {
 impl QuicConn {
     /// Return the number of active streams.
     pub fn active_outbound_streams(&self) -> Option<u64> {
-        let state = self.0.lock().unwrap();
-
-        state.quiche_conn.peer_transport_params().map(|params| {
-            params.initial_max_streams_bidi - state.quiche_conn.peer_streams_left_bidi()
+        self.quiche_conn(|conn| {
+            conn.peer_transport_params()
+                .map(|params| params.initial_max_streams_bidi - conn.peer_streams_left_bidi())
         })
     }
 
@@ -534,7 +533,7 @@ impl QuicConn {
     ///
     /// If this returns true, the connection object can be dropped.
     pub fn is_closed(&self) -> bool {
-        self.0.lock().unwrap().quiche_conn.is_closed()
+        self.quiche_conn(|conn| conn.is_closed())
     }
 
     /// Close this connection.
@@ -777,6 +776,8 @@ impl QuicStream {
                 self.0,
                 state.quiche_conn.trace_id(),
             );
+
+            state.closing_stream_set.insert(self.0, Instant::now());
         } else {
             // force to collect complete streams.
             // assert!(

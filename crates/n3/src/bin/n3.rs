@@ -74,8 +74,24 @@ struct Cli {
     ///
     /// When set to a non-zero value quiche will only allow v number of concurrent remotely-initiated bidirectional
     /// streams to be open at any given time and will increase the limit automatically as streams are completed.
-    #[arg(short, long, value_name = "STREAMS", default_value_t = 100)]
+    #[arg(long, value_name = "STREAMS", default_value_t = 100)]
     max_streams: u64,
+
+    /// Sets the initial_max_stream_data_bidi_remote transport parameter.
+    ///
+    /// When set to a non-zero value quiche will only allow at most v bytes of incoming stream data
+    /// to be buffered for each remotely-initiated bidirectional stream (that is, data that is not
+    /// yet read by the application) and will allow more data to be received as the buffer is
+    /// consumed by the application.
+    ///
+    /// When set to zero, either explicitly or via the default, quiche will not give any flow control
+    /// to the peer, preventing it from sending any stream data.
+    #[arg(long, value_name = "SIZE", default_value_t = 1024 * 1024 * 10)]
+    max_stream_data_bidi: u64,
+
+    /// Sets the max_idle_timeout transport parameter, in milliseconds.
+    #[arg(long, value_name = "SIZE", default_value_t = 60 * 1000)]
+    max_idle_timeout: u64,
 
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
@@ -143,9 +159,10 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
                 .verify_peer(cli.verify_peer.is_some())
                 .quiche_config(|config| {
                     config.set_initial_max_data(10_000_000);
-                    config.set_initial_max_stream_data_bidi_local(1024 * 1024);
-                    config.set_initial_max_stream_data_bidi_remote(1024 * 1024);
+                    // config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
+                    config.set_initial_max_stream_data_bidi_remote(cli.max_stream_data_bidi);
                     config.set_initial_max_streams_bidi(cli.max_streams);
+                    config.set_max_idle_timeout(cli.max_idle_timeout);
 
                     config
                         .load_cert_chain_from_pem_file(cli.cert.to_str().unwrap())

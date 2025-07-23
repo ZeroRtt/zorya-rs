@@ -161,7 +161,7 @@ impl Reactor {
                     event.is_writable(),
                 );
 
-                if event.is_readable() {
+                if event.is_readable() || event.is_write_closed() {
                     if let Some(mut v) = self.0.io_readable_stats.get_mut(&token) {
                         match std::mem::take(&mut *v) {
                             IoState::Waker(waker) | IoState::Timer(_, waker) => {
@@ -172,7 +172,7 @@ impl Reactor {
                     }
                 }
 
-                if event.is_writable() {
+                if event.is_writable() || event.is_write_closed() {
                     if let Some(mut v) = self.0.io_writable_stats.get_mut(&token) {
                         match std::mem::take(&mut *v) {
                             IoState::Waker(waker) => {

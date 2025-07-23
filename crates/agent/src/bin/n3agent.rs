@@ -65,6 +65,22 @@ struct Cli {
     #[arg(short, long, value_name = "PEM_FILE", default_value = "n3.key")]
     key: PathBuf,
 
+    /// Sets the initial_max_stream_data_bidi_remote transport parameter.
+    ///
+    /// When set to a non-zero value quiche will only allow at most v bytes of incoming stream data
+    /// to be buffered for each locally-initiated bidirectional stream (that is, data that is not
+    /// yet read by the application) and will allow more data to be received as the buffer is
+    /// consumed by the application.
+    ///
+    /// When set to zero, either explicitly or via the default, quiche will not give any flow control
+    /// to the peer, preventing it from sending any stream data.
+    #[arg(long, value_name = "SIZE", default_value_t = 1024 * 1024 * 10)]
+    max_stream_data_bidi: u64,
+
+    /// Sets the max_idle_timeout transport parameter, in milliseconds.
+    #[arg(long, value_name = "SIZE", default_value_t = 60 * 1000)]
+    max_idle_timeout: u64,
+
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
     debug: bool,
@@ -109,8 +125,9 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
         .connector(|connector| {
             connector.quiche_config(|config| {
                 config.set_initial_max_data(10_000_000);
-                config.set_initial_max_stream_data_bidi_local(1024 * 1024);
-                config.set_initial_max_stream_data_bidi_remote(1024 * 1024);
+                config.set_initial_max_stream_data_bidi_local(cli.max_stream_data_bidi);
+                // config.set_initial_max_stream_data_bidi_remote(cli.max_stream_data_bidi);
+                config.set_max_idle_timeout(cli.max_idle_timeout);
 
                 if let Some(cert) = &cli.cert {
                     config

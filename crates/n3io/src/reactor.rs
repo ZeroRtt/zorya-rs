@@ -501,7 +501,7 @@ mod tests {
                     &mut noop_context(),
                     token,
                     Interest::READABLE,
-                    Some(Instant::now() + Duration::from_millis(100)),
+                    Some(Instant::now() + Duration::from_millis(200)),
                     |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
                 )
                 .is_pending(),
@@ -513,7 +513,7 @@ mod tests {
             &mut noop_context(),
             token,
             Interest::READABLE,
-            Some(Instant::now() + Duration::from_millis(100)),
+            Some(Instant::now() + Duration::from_millis(200)),
             |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
         );
 
@@ -536,7 +536,7 @@ mod tests {
                 .is_ready()
         );
 
-        let timer = global_reactor().deadline(Instant::now() + Duration::from_millis(100));
+        let timer = global_reactor().deadline(Instant::now() + Duration::from_millis(200));
 
         assert!(
             global_reactor()

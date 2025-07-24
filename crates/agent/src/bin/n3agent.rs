@@ -3,12 +3,14 @@ use std::{
     net::{IpAddr, SocketAddr},
     ops::Range,
     path::PathBuf,
+    time::Duration,
 };
 
 use clap::{Parser, Subcommand};
 use color_print::ceprintln;
 use futures::executor::block_on;
 use n3agent::Agent;
+use n3io::reactor::{Reactor, set_global_reactor};
 
 fn parse_port_range(arg: &str) -> std::result::Result<Range<u16>, String> {
     let parts = arg.split(":").collect::<Vec<_>>();
@@ -91,6 +93,10 @@ struct Cli {
     /// streams to be open at any given time and will increase the limit automatically as streams are completed.
     #[arg(long, value_name = "STREAMS", default_value_t = 100)]
     initial_max_streams: u64,
+
+    /// Set the io timer tick interval, in milliseconds.
+    #[arg(long, value_name = "INTERVAL", default_value_t = 200)]
+    io_timer_tick_interval: u64,
 
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
@@ -186,6 +192,16 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
 
 async fn run_n3_agent() -> Result<()> {
     let cli = Cli::parse();
+
+    let io_timer_tick_interval = cli.io_timer_tick_interval;
+
+    set_global_reactor(move || {
+        let (reactor, _) =
+            Reactor::with_background_thread(Duration::from_millis(io_timer_tick_interval), 1024)
+                .unwrap();
+
+        reactor
+    });
 
     if cli.debug {
         pretty_env_logger::try_init_timed().map_err(Error::other)?;

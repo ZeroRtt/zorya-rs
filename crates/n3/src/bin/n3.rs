@@ -3,12 +3,14 @@ use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
     ops::Range,
     path::PathBuf,
+    time::Duration,
 };
 
 use clap::{Parser, Subcommand};
 use color_print::ceprintln;
 use futures::executor::block_on;
 
+use n3io::reactor::{Reactor, set_global_reactor};
 use n3server::N3;
 
 fn parse_port_range(arg: &str) -> std::result::Result<Range<u16>, String> {
@@ -97,6 +99,10 @@ struct Cli {
     #[arg(long, value_name = "SIZE", default_value_t = 25)]
     max_ack_delay: u64,
 
+    /// Set the io timer tick interval, in milliseconds.
+    #[arg(long, value_name = "INTERVAL", default_value_t = 200)]
+    io_timer_tick_interval: u64,
+
     /// Debug mode, print verbose output informations.
     #[arg(short, long, default_value_t = false, action)]
     debug: bool,
@@ -134,6 +140,16 @@ fn parse_laddrs(cli: &Cli) -> Result<Vec<SocketAddr>> {
 
 async fn run_n3() -> Result<()> {
     let cli = Cli::parse();
+
+    let io_timer_tick_interval = cli.io_timer_tick_interval;
+
+    set_global_reactor(move || {
+        let (reactor, _) =
+            Reactor::with_background_thread(Duration::from_millis(io_timer_tick_interval), 1024)
+                .unwrap();
+
+        reactor
+    });
 
     if cli.debug {
         pretty_env_logger::try_init_timed().map_err(Error::other)?;

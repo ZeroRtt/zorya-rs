@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.9] - 2025-07-24
+
+- n3io: change default io_timeout_interval to `200` milliseconds.
+
 ## [0.1.8] - 2025-07-24
 
 - n3/n3agent: change default values of quic.

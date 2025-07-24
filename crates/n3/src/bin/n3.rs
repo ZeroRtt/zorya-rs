@@ -75,7 +75,7 @@ struct Cli {
     /// When set to a non-zero value quiche will only allow v number of concurrent remotely-initiated bidirectional
     /// streams to be open at any given time and will increase the limit automatically as streams are completed.
     #[arg(long, value_name = "STREAMS", default_value_t = 100)]
-    max_streams: u64,
+    initial_max_streams: u64,
 
     /// Sets the initial_max_stream_data_bidi_remote transport parameter.
     ///
@@ -87,14 +87,14 @@ struct Cli {
     /// When set to zero, either explicitly or via the default, quiche will not give any flow control
     /// to the peer, preventing it from sending any stream data.
     #[arg(long, value_name = "SIZE", default_value_t = 1024 * 1024 * 10)]
-    max_stream_data_bidi: u64,
+    initial_max_stream_data: u64,
 
     /// Sets the max_idle_timeout transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 60 * 1000)]
+    #[arg(long, value_name = "SIZE", default_value_t = 10 * 1000)]
     max_idle_timeout: u64,
 
     /// Sets the `max_ack_delay` transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 50)]
+    #[arg(long, value_name = "SIZE", default_value_t = 25)]
     max_ack_delay: u64,
 
     /// Debug mode, print verbose output informations.
@@ -162,9 +162,14 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
             quic_server
                 .verify_peer(cli.verify_peer.is_some())
                 .quiche_config(|config| {
-                    config.set_initial_max_data(cli.max_stream_data_bidi * cli.max_streams);
-                    config.set_initial_max_stream_data_bidi_remote(cli.max_stream_data_bidi);
-                    config.set_initial_max_streams_bidi(cli.max_streams);
+                    config.set_initial_max_data(
+                        cli.initial_max_streams * cli.initial_max_stream_data,
+                    );
+                    config.set_initial_max_stream_data_bidi_local(cli.initial_max_stream_data);
+                    config.set_initial_max_stream_data_bidi_remote(cli.initial_max_stream_data);
+                    config.set_initial_max_stream_data_uni(cli.initial_max_stream_data);
+                    config.set_initial_max_streams_bidi(cli.initial_max_streams);
+                    config.set_initial_max_streams_uni(cli.initial_max_streams);
                     config.set_max_idle_timeout(cli.max_idle_timeout);
                     config.set_max_ack_delay(cli.max_ack_delay);
 

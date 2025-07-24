@@ -16,7 +16,7 @@
 //!
 //! time_wheel.deadline(Instant::now() + Duration::from_millis(1), ());
 //!
-//! sleep(Duration::from_millis(1));
+//! sleep(Duration::from_millis(2));
 //!
 //! let mut wakers = vec![];
 //!
@@ -85,7 +85,7 @@ impl<T> TimeWheel<T> {
     ///
     /// time_wheel.deadline(Instant::now() + Duration::from_millis(1), ());
     ///
-    /// sleep(Duration::from_millis(1));
+    /// sleep(Duration::from_millis(2));
     ///
     /// let mut wakers = vec![];
     ///
@@ -94,7 +94,13 @@ impl<T> TimeWheel<T> {
     /// assert_eq!(wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(), vec![()]);
     /// ```
     pub fn deadline(&mut self, deadline: Instant, value: T) -> Option<u64> {
-        let ticks = (deadline - self.start).as_micros() as u64 / self.tick_interval;
+        let interval = (deadline - self.start).as_micros() as u64;
+
+        let mut ticks = interval / self.tick_interval;
+
+        if interval % self.tick_interval != 0 {
+            ticks += 1;
+        }
 
         if !(ticks > self.ticks) {
             return None;
@@ -125,7 +131,7 @@ impl<T> TimeWheel<T> {
     ///
     /// time_wheel.after(Duration::from_millis(1), ());
     ///
-    /// sleep(Duration::from_millis(1));
+    /// sleep(Duration::from_millis(2));
     ///
     /// let mut wakers = vec![];
     ///
@@ -139,10 +145,10 @@ impl<T> TimeWheel<T> {
 
     /// Spin the wheel according to the current time and detect(returns) the expiry timers.
     pub fn spin(&mut self, wakers: &mut Vec<(u64, T)>) {
-        let to_slot = (Instant::now() - self.start).as_micros() as u64 / self.tick_interval;
+        self.ticks = (Instant::now() - self.start).as_micros() as u64 / self.tick_interval;
 
         while let Some(slot) = self.priority_queue.peek() {
-            if slot.0 > to_slot {
+            if slot.0 > self.ticks {
                 break;
             }
 
@@ -258,7 +264,7 @@ mod tests {
 
         time_wheel.after(Duration::from_millis(1), ());
 
-        sleep(Duration::from_millis(1));
+        sleep(Duration::from_millis(2));
 
         let mut wakers = vec![];
 

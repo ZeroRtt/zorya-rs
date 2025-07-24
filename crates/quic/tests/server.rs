@@ -144,7 +144,7 @@ async fn server_drop_conn() {
 
     drop(inbound);
 
-    sleep(Duration::from_millis(200));
+    sleep(Duration::from_millis(400));
 
     assert!(outbound.is_closed());
 

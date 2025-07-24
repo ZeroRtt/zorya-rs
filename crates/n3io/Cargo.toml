@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 name = "n3io"
 repository = "https://github.com/quic-lab/n3/crates/n3io"
-version = "0.1.4"
+version = "0.1.5"
 
 [dependencies]
 mio = { version = "^1", features = ["net", "os-poll"] }

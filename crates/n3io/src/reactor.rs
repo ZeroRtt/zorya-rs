@@ -242,6 +242,7 @@ impl Reactor {
 
     /// Create a new `deadline` timer.
     pub fn deadline(&self, deadline: Instant) -> Token {
+        log::trace!("create deadline {:?}", deadline);
         let token = self.0.next_token(Interest::READABLE);
 
         if let Some(mut stat) = self.0.io_readable_stats.get_mut(&token) {
@@ -501,19 +502,19 @@ mod tests {
                     &mut noop_context(),
                     token,
                     Interest::READABLE,
-                    Some(Instant::now() + Duration::from_millis(200)),
+                    Some(Instant::now() + Duration::from_millis(400)),
                     |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
                 )
                 .is_pending(),
         );
 
-        sleep(Duration::from_millis(200));
+        sleep(Duration::from_millis(800));
 
         let poll = global_reactor().poll_io(
             &mut noop_context(),
             token,
             Interest::READABLE,
-            Some(Instant::now() + Duration::from_millis(200)),
+            Some(Instant::now() + Duration::from_millis(400)),
             |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
         );
 
@@ -529,6 +530,8 @@ mod tests {
     #[test]
     fn test_deadline() {
         let timer = global_reactor().deadline(Instant::now());
+
+        sleep(Duration::from_millis(400));
 
         assert!(
             global_reactor()

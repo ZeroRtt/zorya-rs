@@ -273,9 +273,10 @@ impl QuicConnDispatcher {
             match state.reactor.poll_timeout(cx, timer) {
                 Poll::Ready(_) => {
                     log::trace!(
-                        "QuicConn({}) call on_timeout, trace_id={}",
+                        "QuicConn({}) call on_timeout, trace_id={}, timer={:?}",
                         state.quiche_conn.is_server(),
-                        state.quiche_conn.trace_id()
+                        state.quiche_conn.trace_id(),
+                        timer,
                     );
                     state.quiche_conn.on_timeout();
                 }

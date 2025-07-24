@@ -5,10 +5,10 @@ edition = "2024"
 license = "MIT"
 name = "timing-wheel"
 repository = "https://github.com/quic-lab/n3/crates/timing-wheel"
-version = "0.1.3"
+version = "0.1.4"
 
 [dev-dependencies]
-divan = "0.1.21"
+divan = "^0.1"
 
 
 [[bench]]

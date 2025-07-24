@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "n3quic"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "boring",
  "cooked-waker",

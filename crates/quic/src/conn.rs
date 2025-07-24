@@ -830,6 +830,14 @@ impl QuicStream {
 
         match state.quiche_conn.stream_send(self.0, buf, fin) {
             Ok(written_size) => {
+                log::trace!(
+                    "Stream write, stream_id={}, trace_id={}, send_size={}, fin={}, is_server={}",
+                    self.0,
+                    state.quiche_conn.trace_id(),
+                    written_size,
+                    fin,
+                    state.quiche_conn.is_server()
+                );
                 if let Some(waker) = state.send_waker.take() {
                     drop(state);
                     waker.wake();
@@ -838,6 +846,13 @@ impl QuicStream {
                 return Poll::Ready(Ok(written_size));
             }
             Err(quiche::Error::Done) => {
+                log::trace!(
+                    "QuicConn({}): stream write, stream_id={}, trace_id={}, pending",
+                    state.quiche_conn.is_server(),
+                    self.0,
+                    state.quiche_conn.trace_id()
+                );
+
                 state
                     .stream_writable_wakers
                     .insert(self.0, cx.waker().clone());

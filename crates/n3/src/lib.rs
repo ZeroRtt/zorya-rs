@@ -7,10 +7,7 @@ use std::{
     net::{SocketAddr, ToSocketAddrs},
 };
 
-use futures::{
-    AsyncWriteExt,
-    io::{BufReader, copy_buf},
-};
+use futures::{AsyncWriteExt, io::copy};
 use n3_spawner::spawn;
 use n3io::net::TcpStream;
 use n3quic::{QuicConn, QuicConnExt, QuicServer};
@@ -89,7 +86,7 @@ impl N3 {
             let trace_id_owned = trace_id.to_owned();
 
             spawn(async move {
-                match copy_buf(BufReader::new(outbound_reader), &mut inbound_writer).await {
+                match copy(outbound_reader, &mut inbound_writer).await {
                     Ok(len) => {
                         log::info!(
                             "stream(backward) is closed, quic({},{}) <== tcp({},{}), trans_size={}",
@@ -127,7 +124,7 @@ impl N3 {
             let trace_id_owned = trace_id.to_owned();
 
             spawn(async move {
-                match copy_buf(BufReader::new(inbound_reader), &mut outbound_writer).await {
+                match copy(inbound_reader, &mut outbound_writer).await {
                     Ok(len) => {
                         log::info!(
                             "stream(forward) is closed, quic({},{}) ==> tcp({},{}), trans_size={}",

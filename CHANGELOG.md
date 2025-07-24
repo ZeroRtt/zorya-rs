@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.7] - 2025-07-24
+
+- n3/n3agent: fixed a io copy bug.
+
 ## [0.1.6] - 2025-07-23
 
 - futures_executor: limits the minimum number of threads to `10`.

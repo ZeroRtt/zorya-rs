@@ -5,13 +5,10 @@ use std::{
     time::Duration,
 };
 
-use futures::{
-    AsyncWriteExt,
-    io::{BufReader, copy_buf},
-};
+use futures::{AsyncWriteExt, io::copy};
 
 use n3_spawner::spawn;
-use n3io::{net::TcpListener, timeout::TimeoutExt};
+use n3io::{net::TcpListener, timeout::TimeoutExt as _};
 use n3quic::{QuicConn, QuicConnExt, QuicConnector, QuicStream};
 
 #[derive(Debug, Default)]
@@ -158,12 +155,17 @@ impl Agent {
         loop {
             let (inbound, from) = listener.accept().await?;
 
-            log::info!("inbound tcp stream, from={}", from);
-
             let (trace_id, outbound) = match pool.connect().await {
-                Ok(outbound) => outbound,
+                Ok((trace_id, outbound)) => {
+                    log::info!("in: {}, out: ({},{})", from, trace_id, outbound.id());
+                    (trace_id, outbound)
+                }
                 Err(err) => {
-                    log::error!("Failed to open quic stream, err={}", err);
+                    log::error!(
+                        "Failed to open quic stream for inbound, from={}, err={}",
+                        from,
+                        err
+                    );
                     continue;
                 }
             };
@@ -176,7 +178,7 @@ impl Agent {
             let trace_id_cloned = trace_id.clone();
 
             spawn(async move {
-                match copy_buf(BufReader::new(outbound_reader), &mut inbound_writer).await {
+                match copy(outbound_reader, &mut inbound_writer).await {
                     Ok(len) => {
                         log::info!(
                             "stream(backward) is closed, tcp({}) <== quic({},{}), transferred={}",
@@ -209,7 +211,7 @@ impl Agent {
             })?;
 
             spawn(async move {
-                match copy_buf(BufReader::new(inbound_reader), &mut outbound_writer).await {
+                match copy(inbound_reader, &mut outbound_writer).await {
                     Ok(len) => {
                         log::info!(
                             "stream(forward) is closed, tcp({}) ==> quic({},{}), transferred={}",

@@ -78,7 +78,7 @@ struct Cli {
     max_stream_data_bidi: u64,
 
     /// Sets the max_idle_timeout transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 60 * 1000)]
+    #[arg(long, value_name = "SIZE", default_value_t = 5 * 60 * 1000)]
     max_idle_timeout: u64,
 
     /// Sets the `max_ack_delay` transport parameter, in milliseconds.
@@ -140,6 +140,8 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
                 config.set_initial_max_streams_bidi(cli.max_streams);
                 config.set_max_idle_timeout(cli.max_idle_timeout);
                 config.set_max_ack_delay(cli.max_ack_delay);
+                config.set_max_recv_udp_payload_size(1200);
+                config.set_max_send_udp_payload_size(1200);
 
                 if let Some(cert) = &cli.cert {
                     config

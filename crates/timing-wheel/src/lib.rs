@@ -22,7 +22,7 @@
 //!
 //! time_wheel.spin(&mut wakers);
 //!
-//! assert_eq!(wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(), vec![()]);
+//! assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
 //! ```
 //!
 //! [`spin`]: TimeWheel::spin
@@ -103,7 +103,7 @@ impl<T> TimeWheel<T> {
     ///
     /// time_wheel.spin(&mut wakers);
     ///
-    /// assert_eq!(wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(), vec![()]);
+    /// assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
     /// ```
     pub fn deadline(&mut self, deadline: Instant, value: T) -> Option<u64> {
         let ticks = self.instant_to_ticks(deadline);
@@ -143,14 +143,14 @@ impl<T> TimeWheel<T> {
     ///
     /// time_wheel.spin(&mut wakers);
     ///
-    /// assert_eq!(wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(), vec![()]);
+    /// assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
     /// ```
     pub fn after(&mut self, duration: Duration, value: T) -> Option<u64> {
         self.deadline(Instant::now() + duration, value)
     }
 
     /// Spin the wheel according to the current time and detect(returns) the expiry timers.
-    pub fn spin(&mut self, wakers: &mut Vec<(u64, T)>) {
+    pub fn spin(&mut self, wakers: &mut Vec<T>) {
         self.ticks = self.instant_to_ticks(Instant::now());
 
         while let Some(slot) = self.priority_queue.peek() {
@@ -160,10 +160,8 @@ impl<T> TimeWheel<T> {
 
             let slot = self.priority_queue.pop().unwrap().0;
 
-            if let Some(timers) = self.timers.remove(&slot) {
+            if let Some(mut timers) = self.timers.remove(&slot) {
                 self.counter -= timers.len();
-
-                let mut timers = timers.into_iter().map(|v| (slot, v)).collect();
 
                 wakers.append(&mut timers);
             }
@@ -193,10 +191,7 @@ mod tests {
 
         time_wheel.spin(&mut wakers);
 
-        assert_eq!(
-            wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(),
-            vec![()]
-        );
+        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
     }
 
     #[test]
@@ -219,10 +214,7 @@ mod tests {
 
         time_wheel.spin(&mut wakers);
 
-        assert_eq!(
-            wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
+        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![1, 2]);
     }
 
     #[test]
@@ -245,10 +237,7 @@ mod tests {
 
         time_wheel.spin(&mut wakers);
 
-        assert_eq!(
-            wakers.iter().cloned().map(|v| v.1).collect::<Vec<_>>(),
-            vec![1]
-        );
+        assert_eq!(wakers.iter().cloned().collect::<Vec<_>>(), vec![1]);
 
         assert_eq!(time_wheel.len(), 1);
 
@@ -256,10 +245,7 @@ mod tests {
 
         time_wheel.spin(&mut wakers);
 
-        assert_eq!(
-            wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
+        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![1, 2]);
 
         assert_eq!(time_wheel.len(), 0);
     }
@@ -276,9 +262,6 @@ mod tests {
 
         time_wheel.spin(&mut wakers);
 
-        assert_eq!(
-            wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(),
-            vec![()]
-        );
+        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
     }
 }

@@ -196,11 +196,7 @@ async fn run_n3_agent() -> Result<()> {
     let io_timer_tick_interval = cli.io_timer_tick_interval;
 
     set_global_reactor(move || {
-        let (reactor, _) =
-            Reactor::with_background_thread(Duration::from_millis(io_timer_tick_interval), 1024)
-                .unwrap();
-
-        reactor
+        Reactor::new(1024, Duration::from_millis(io_timer_tick_interval)).unwrap()
     });
 
     if cli.debug {

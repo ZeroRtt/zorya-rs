@@ -10,7 +10,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
-    thread::JoinHandle,
+    thread::sleep,
     time::{Duration, Instant},
 };
 
@@ -22,8 +22,9 @@ use timing_wheel::TimeWheel;
 enum IoState {
     Timeout,
     Deadline(Instant),
-    Timer(u64, Waker),
+    Timer(Waker),
     Waker(Waker),
+    Ready,
     None,
     Shutdown,
 }
@@ -42,7 +43,7 @@ struct ReactorImpl {
     /// stats for io writting ops.
     io_writable_stats: DashMap<Token, IoState>,
     /// timing-wheel
-    timing_wheel: Mutex<TimeWheel<(Token, bool)>>,
+    timing_wheel: Mutex<TimeWheel<Token>>,
     /// mio registry.
     registry: Registry,
 }
@@ -55,6 +56,16 @@ impl ReactorImpl {
             io_writable_stats: Default::default(),
             timing_wheel: Mutex::new(TimeWheel::new(tick_interval)),
             registry,
+        }
+    }
+
+    fn drop_token(&self, token: Token, interests: Interest) {
+        if interests.is_readable() {
+            self.io_readable_stats.remove(&token);
+        }
+
+        if interests.is_writable() {
+            self.io_writable_stats.remove(&token);
         }
     }
 
@@ -104,130 +115,163 @@ impl Debug for Reactor {
     }
 }
 
+#[allow(unused)]
 impl Reactor {
     /// Create a reactor with minimum timer interval resolution `tick_interval`.
-    pub fn new(tick_interval: Duration) -> Result<(Self, mio::Poll)> {
+    pub fn new(max_poll_events: usize, tick_interval: Duration) -> Result<Self> {
         let poll = mio::Poll::new()?;
 
-        Ok((
-            Self(Arc::new(ReactorImpl::new(
-                poll.registry().try_clone()?,
-                tick_interval,
-            ))),
-            poll,
-        ))
+        let reactor = Arc::new(ReactorImpl::new(
+            poll.registry().try_clone()?,
+            tick_interval,
+        ));
+
+        let this = reactor.clone();
+
+        std::thread::spawn(move || {
+            if let Err(err) = Self::io_events_loop(this, poll, max_poll_events) {
+                log::error!("io_events_loop stopped,{}", err);
+            }
+        });
+
+        let this = reactor.clone();
+
+        std::thread::spawn(move || Self::timing_wheel_ticks(this, tick_interval));
+
+        Ok(Self(reactor))
     }
 
-    /// Start a background poll thread.
-    #[cfg(feature = "background_poll")]
-    pub fn with_background_thread(
-        tick_interval: Duration,
-        max_poll_events: usize,
-    ) -> Result<(Self, JoinHandle<Result<()>>)> {
-        let (reactor, poll) = Self::new(tick_interval)?;
-
-        let background = reactor.clone();
-
-        let join_handle =
-            std::thread::spawn(move || background.run(poll, max_poll_events, tick_interval));
-
-        Ok((reactor, join_handle))
-    }
-
-    /// Consume and run this reactor.
-    pub fn run(
-        self,
+    fn io_events_loop(
+        this: Arc<ReactorImpl>,
         mut poll: mio::Poll,
         max_poll_events: usize,
-        tick_interval: Duration,
     ) -> Result<()> {
         let mut events = Events::with_capacity(max_poll_events);
-
-        let mut wakers = vec![];
-        let mut timers = vec![];
-
         loop {
-            events.clear();
-
-            poll.poll(&mut events, Some(tick_interval))?;
+            poll.poll(&mut events, None)?;
 
             for event in events.iter() {
-                let token = event.token();
-
                 log::trace!(
-                    "Reactor(background) rasied event, token={:?}, readable={}, writable={}",
-                    token,
+                    "event raised, token={:?}, readable={}, writable={}, read_closed={}, write_closed={}",
+                    event.token(),
                     event.is_readable(),
                     event.is_writable(),
+                    event.is_read_closed(),
+                    event.is_write_closed(),
                 );
 
-                if event.is_readable() || event.is_write_closed() {
-                    if let Some(mut v) = self.0.io_readable_stats.get_mut(&token) {
-                        match std::mem::take(&mut *v) {
-                            IoState::Waker(waker) | IoState::Timer(_, waker) => {
-                                wakers.push(waker);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                if event.is_writable() || event.is_write_closed() {
-                    if let Some(mut v) = self.0.io_writable_stats.get_mut(&token) {
-                        match std::mem::take(&mut *v) {
+                if event.is_read_closed() || event.is_readable() {
+                    if let Some(mut stat) = this.io_readable_stats.get_mut(&event.token()) {
+                        match &*stat {
                             IoState::Waker(waker) => {
-                                wakers.push(waker);
+                                log::trace!(
+                                    "call waker::wake(), token={:?}, readable",
+                                    event.token(),
+                                );
+                                waker.wake_by_ref();
+                                *stat = IoState::Ready;
+                                drop(stat);
                             }
-                            _ => {}
+                            IoState::None => {
+                                *stat = IoState::Ready;
+                            }
+                            IoState::Shutdown | IoState::Ready => {}
+                            _ => {
+                                unreachable!(
+                                    "Invalid readable state, token={:?}, stat={:?}",
+                                    event.token(),
+                                    *stat
+                                );
+                            }
+                        }
+                    } else {
+                        log::warn!("readable source is deregister, token={:?}", event.token());
+                    }
+                }
+
+                if event.is_write_closed() || event.is_writable() {
+                    if let Some(mut stat) = this.io_writable_stats.get_mut(&event.token()) {
+                        match &*stat {
+                            IoState::Waker(waker) => {
+                                log::trace!(
+                                    "call waker::wake(), token={:?}, writable",
+                                    event.token(),
+                                );
+
+                                waker.wake_by_ref();
+                                *stat = IoState::Ready;
+                                drop(stat);
+                            }
+                            IoState::None => {
+                                *stat = IoState::Ready;
+                            }
+                            IoState::Shutdown | IoState::Ready => {}
+                            _ => {
+                                unreachable!(
+                                    "Invalid writable state, token={:?}, stat={:?}",
+                                    event.token(),
+                                    *stat
+                                );
+                            }
+                        }
+                    } else {
+                        log::warn!("writable source is deregister, token={:?}", event.token());
+                    }
+                }
+            }
+
+            events.clear();
+        }
+    }
+
+    fn timing_wheel_ticks(this: Arc<ReactorImpl>, tick_interval: Duration) {
+        let mut wakers = vec![];
+        loop {
+            this.timing_wheel.lock().unwrap().spin(&mut wakers);
+
+            for token in wakers.drain(..) {
+                if let Some(mut stat) = this.io_readable_stats.get_mut(&token) {
+                    let old = std::mem::replace(&mut *stat, IoState::Timeout);
+                    drop(stat);
+
+                    match old {
+                        IoState::Timer(waker) => {
+                            log::trace!("raise timeout event, token={:?}", token);
+                            waker.wake();
+                        }
+                        _ => {
+                            unreachable!("Invalid timer state, token={:?}, stat={:?}", token, old)
                         }
                     }
                 }
             }
 
-            self.0.timing_wheel.lock().unwrap().spin(&mut timers);
-
-            for (timer, (token, is_read)) in timers.drain(..) {
-                let _wakers = if is_read {
-                    &self.0.io_readable_stats
-                } else {
-                    &self.0.io_writable_stats
-                };
-
-                if let Some(mut v) = _wakers.get_mut(&token) {
-                    match std::mem::take(&mut *v) {
-                        IoState::Timer(target_timer, waker) if target_timer == timer => {
-                            wakers.push(waker);
-                            *v = IoState::Timeout;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            for waker in wakers.drain(..) {
-                waker.wake();
-            }
+            sleep(tick_interval);
         }
     }
 
     /// See [`Source::register`]
-    pub fn register<S>(&self, source: &mut S, intrests: Interest) -> Result<Token>
+    pub fn register<S>(&self, source: &mut S, interests: Interest) -> Result<Token>
     where
         S: Source,
     {
-        let token = self.0.next_token(intrests);
+        let token = self.0.next_token(interests);
 
-        source
-            .register(&self.0.registry, token, intrests)
-            .map(|_| token)
+        match self.0.registry.register(source, token, interests) {
+            Ok(_) => Ok(token),
+            Err(err) => {
+                self.0.drop_token(token, interests);
+                Err(err)
+            }
+        }
     }
 
     /// See [`Source::reregister`]
-    pub fn reregister<S>(&self, source: &mut S, token: Token, intrests: Interest) -> Result<()>
+    pub fn reregister<S>(&self, source: &mut S, token: Token, interests: Interest) -> Result<()>
     where
         S: Source,
     {
-        source.reregister(&self.0.registry, token, intrests)
+        self.0.registry.reregister(source, token, interests)
     }
 
     /// See [`Source::deregister`]
@@ -235,116 +279,128 @@ impl Reactor {
     where
         S: Source,
     {
-        self.0.io_readable_stats.remove(&token);
-        self.0.io_writable_stats.remove(&token);
-        source.deregister(&self.0.registry)
+        self.0
+            .drop_token(token, Interest::READABLE.add(Interest::WRITABLE));
+        self.0.registry.deregister(source)
     }
 
     /// Create a new `deadline` timer.
     pub fn deadline(&self, deadline: Instant) -> Token {
-        log::trace!("create deadline {:?}", deadline);
         let token = self.0.next_token(Interest::READABLE);
 
-        if let Some(mut stat) = self.0.io_readable_stats.get_mut(&token) {
-            *stat = IoState::Deadline(deadline);
-        } else {
-            unreachable!("deadline token");
-        }
+        *self
+            .0
+            .io_readable_stats
+            .get_mut(&token)
+            .expect("readable stat") = IoState::Deadline(deadline);
 
         token
     }
 
     /// Deregister `deadline` timer from the given instance.
-    pub fn deregister_timer(&self, timer: Token) -> Result<()> {
-        self.0.io_readable_stats.remove(&timer);
-        Ok(())
+    pub fn deregister_timer(&self, timer: Token) {
+        self.0.drop_token(timer, Interest::READABLE);
     }
 
     /// poll the timeout stats of one `deadline` timer.
     pub fn poll_timeout(&self, cx: &mut Context<'_>, timer: Token) -> Poll<Result<()>> {
-        if let Some(mut stat) = self.0.io_readable_stats.get_mut(&timer) {
-            match *stat {
-                IoState::Deadline(deadline) => {
-                    match self
+        if let Some(mut state) = self.0.io_readable_stats.get_mut(&timer) {
+            match &mut *state {
+                IoState::Timeout => {
+                    // don't change the state.
+                    return Poll::Ready(Ok(()));
+                }
+                IoState::Deadline(instant) => {
+                    let deadline = *instant;
+
+                    *state = IoState::Timer(cx.waker().clone());
+
+                    drop(state);
+
+                    let ticks = self
                         .0
                         .timing_wheel
                         .lock()
                         .unwrap()
-                        .deadline(deadline, (timer, true))
-                    {
-                        Some(v) => {
-                            *stat = IoState::Timer(v, cx.waker().clone());
-                            Poll::Pending
+                        .deadline(deadline, timer);
+
+                    let mut state = self
+                        .0
+                        .io_readable_stats
+                        .get_mut(&timer)
+                        .expect("multi-thread call same timer");
+
+                    if ticks.is_none() {
+                        *state = IoState::Timeout;
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    match &*state {
+                        IoState::Timeout => {
+                            // timer is already expired.
+                            return Poll::Ready(Ok(()));
                         }
-                        None => {
-                            *stat = IoState::None;
-                            Poll::Ready(Ok(()))
+                        IoState::Timer(_) => {
+                            return Poll::Pending;
+                        }
+                        _ => {
+                            unreachable!(
+                                "multi-thread call same time, with invalid state({:?})",
+                                *state
+                            );
                         }
                     }
                 }
-                IoState::Timer(_, _) => Poll::Pending,
-                IoState::Timeout => {
-                    *stat = IoState::None;
-                    Poll::Ready(Ok(()))
+                IoState::Timer(waker) => {
+                    // update waker.
+                    *waker = cx.waker().clone();
+                    return Poll::Pending;
                 }
                 _ => {
-                    unreachable!("call `poll_timeout` on `io source`.");
+                    unreachable!("call `poll_timeout` with invalid state({:?})", *state);
                 }
             }
-        } else {
-            Poll::Ready(Err(Error::new(
-                ErrorKind::NotFound,
-                format!("can't found deadline({:?})", timer),
-            )))
         }
+
+        return Poll::Ready(Err(Error::new(
+            ErrorKind::NotFound,
+            format!("timer({:?}) is not found.", timer),
+        )));
     }
 
     /// Shutdown the read of this io.
-    pub fn shutdown_read(&self, io: Token) -> Result<()> {
-        if let Some(mut stat) = self.0.io_readable_stats.get_mut(&io) {
-            let waker = match std::mem::take(&mut *stat) {
-                IoState::Timer(_, waker) | IoState::Waker(waker) => Some(waker),
-                _ => None,
-            };
+    pub fn shutdown(&self, io: Token, interests: Interest) -> Result<()> {
+        if interests.is_readable() {
+            let mut state = self.0.io_readable_stats.get_mut(&io).ok_or_else(|| {
+                Error::new(ErrorKind::NotFound, format!("InvalidReadState({:?})", io))
+            })?;
 
-            *stat = IoState::Shutdown;
-
-            if let Some(waker) = waker {
-                drop(stat);
-                waker.wake();
+            match std::mem::replace(&mut *state, IoState::Shutdown) {
+                IoState::Waker(waker) => {
+                    drop(state);
+                    waker.wake();
+                }
+                IoState::Ready | IoState::None | IoState::Shutdown => {}
+                _ => {}
             }
-
-            return Ok(());
         }
 
-        return Err(Error::new(
-            ErrorKind::NotFound,
-            format!("poll_io: resource is not found"),
-        ));
-    }
+        if interests.is_writable() {
+            let mut state = self.0.io_writable_stats.get_mut(&io).ok_or_else(|| {
+                Error::new(ErrorKind::NotFound, format!("InvalidWriteState({:?})", io))
+            })?;
 
-    /// Shutdown the write of this io.
-    pub fn shutdown_write(&self, io: Token) -> Result<()> {
-        if let Some(mut stat) = self.0.io_writable_stats.get_mut(&io) {
-            let waker = match std::mem::take(&mut *stat) {
-                IoState::Timer(_, waker) | IoState::Waker(waker) => Some(waker),
-                _ => None,
-            };
-
-            *stat = IoState::Shutdown;
-
-            if let Some(waker) = waker {
-                drop(stat);
-                waker.wake();
+            match std::mem::replace(&mut *state, IoState::Shutdown) {
+                IoState::Waker(waker) => {
+                    drop(state);
+                    waker.wake();
+                }
+                IoState::Ready | IoState::None | IoState::Shutdown => {}
+                _ => {}
             }
-
-            return Ok(());
         }
 
-        return Err(Error::new(
-            ErrorKind::NotFound,
-            format!("poll_io: resource is not found"),
-        ));
+        Ok(())
     }
 
     /// Attempt to execute an operator on `io`.
@@ -359,82 +415,107 @@ impl Reactor {
         cx: &mut Context<'_>,
         io: Token,
         interest: Interest,
-        deadline: Option<Instant>,
         mut io_f: F,
     ) -> Poll<Result<T>>
     where
         F: FnMut(Token) -> Result<T>,
     {
-        let (stats, is_read) = if interest.is_readable() {
-            (&self.0.io_readable_stats, true)
+        log::trace!("poll_io, token={:?}, interest={:?}", io, interest);
+
+        let stats = if interest.is_readable() {
+            &self.0.io_readable_stats
+        } else if interest.is_writable() {
+            &self.0.io_writable_stats
         } else {
-            (&self.0.io_writable_stats, false)
+            unreachable!("poll_io must with Interest(READABLE/WRITABLE).");
         };
 
-        log::trace!("Reactor(poll_io): poll resource, token={:?}", io,);
+        let mut state = stats
+            .get_mut(&io)
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("InvalidState({:?})", io)))?;
 
-        if let Some(mut stat) = stats.get_mut(&io) {
-            match std::mem::take(&mut *stat) {
-                IoState::Shutdown => {
-                    return Poll::Ready(Err(Error::new(
-                        ErrorKind::BrokenPipe,
-                        format!("Reactor: io read/write is shutdown, token={:?}", io),
-                    )));
-                }
-                IoState::Timeout => {
-                    return Poll::Ready(Err(Error::new(
-                        ErrorKind::TimedOut,
-                        format!("Reactor(poll_io): io timeout, token={:?}", io),
-                    )));
-                }
-                IoState::Timer(timer, waker) => match io_f(io) {
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        *stat = IoState::Timer(timer, waker);
-                        return Poll::Pending;
-                    }
-                    r => return Poll::Ready(r),
-                },
-                // may wakeup by timer.
-                IoState::Waker(_) | IoState::None => match io_f(io) {
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        if let Some(deadline) = deadline {
-                            match self
-                                .0
-                                .timing_wheel
-                                .lock()
-                                .unwrap()
-                                .deadline(deadline, (io, is_read))
-                            {
-                                Some(v) => {
-                                    *stat = IoState::Timer(v, cx.waker().clone());
+        match &*state {
+            IoState::Ready | IoState::Waker(_) | IoState::None => {
+                *state = IoState::None;
+                // unlock state first.
+                drop(state);
+
+                loop {
+                    match io_f(io) {
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                            // lock state.
+                            let mut state = stats.get_mut(&io).expect("multi-thread call same io");
+
+                            match &*state {
+                                IoState::None => {
+                                    log::trace!(
+                                        "poll_io, token={:?}, interest={:?}, would_block",
+                                        io,
+                                        interest
+                                    );
+                                    *state = IoState::Waker(cx.waker().clone());
                                     return Poll::Pending;
                                 }
-                                None => {
+                                IoState::Shutdown => {
+                                    log::trace!(
+                                        "poll_io, token={:?}, interest={:?}, shutdown",
+                                        io,
+                                        interest
+                                    );
                                     return Poll::Ready(Err(Error::new(
-                                        ErrorKind::TimedOut,
-                                        format!("Reactor(poll_io): io timeout, token={:?}", io),
+                                        ErrorKind::BrokenPipe,
+                                        if interest.is_readable() {
+                                            format!("Shutdown readable({:?})", io)
+                                        } else {
+                                            format!("Shutdown writable({:?})", io)
+                                        },
                                     )));
+                                }
+                                IoState::Ready => {
+                                    log::trace!(
+                                        "poll_io, token={:?}, interest={:?}, retry",
+                                        io,
+                                        interest
+                                    );
+                                    // retry io
+                                    *state = IoState::None;
+
+                                    drop(state);
+
+                                    continue;
+                                }
+                                _ => {
+                                    unreachable!(
+                                        "multi-thread call `poll_io` on same io, token={:?}, state={:?}, interest={:?}",
+                                        io, *state, interest
+                                    );
                                 }
                             }
                         }
-
-                        *stat = IoState::Waker(cx.waker().clone());
-                        return Poll::Pending;
+                        r => {
+                            log::trace!("poll_io, token={:?}, interest={:?}, ready", io, interest);
+                            return Poll::Ready(r);
+                        }
                     }
-                    r => return Poll::Ready(r),
-                },
-                stat => {
-                    unreachable!("Reactor(poll_io): unhandle state, state={:?}", stat);
                 }
+            }
+            IoState::Shutdown => {
+                log::trace!("poll_io, token={:?}, interest={:?}, shutdown", io, interest);
+                return Poll::Ready(Err(Error::new(
+                    ErrorKind::BrokenPipe,
+                    if interest.is_readable() {
+                        format!("Shutdown readable({:?})", io)
+                    } else {
+                        format!("Shutdown writable({:?})", io)
+                    },
+                )));
+            }
+            _ => {
+                unreachable!("Invalid state, token={:?}, state={:?}", io, *state);
             }
         }
 
-        log::error!("Reactor(poll_io): resource is not found, token={:?}", io);
-
-        return Poll::Ready(Err(Error::new(
-            ErrorKind::NotFound,
-            format!("poll_io: resource is not found"),
-        )));
+        todo!()
     }
 }
 
@@ -452,10 +533,7 @@ mod global {
                 return f();
             }
 
-            let (reactor, _) =
-                Reactor::with_background_thread(Duration::from_millis(200), 1024).unwrap();
-
-            reactor
+            Reactor::new(1024, Duration::from_millis(200)).unwrap()
         })
     }
 
@@ -486,52 +564,11 @@ mod tests {
 
     use std::thread::sleep;
 
-    use mio::net::UdpSocket;
-
-    #[test]
-    fn test_timeout() {
-        let mut socket = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
-
-        let token = global_reactor()
-            .register(&mut socket, Interest::READABLE.add(Interest::WRITABLE))
-            .unwrap();
-
-        assert!(
-            global_reactor()
-                .poll_io(
-                    &mut noop_context(),
-                    token,
-                    Interest::READABLE,
-                    Some(Instant::now() + Duration::from_millis(400)),
-                    |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
-                )
-                .is_pending(),
-        );
-
-        sleep(Duration::from_millis(800));
-
-        let poll = global_reactor().poll_io(
-            &mut noop_context(),
-            token,
-            Interest::READABLE,
-            Some(Instant::now() + Duration::from_millis(400)),
-            |_| -> Result<()> { Err(Error::new(ErrorKind::WouldBlock, "")) },
-        );
-
-        assert!(poll.is_ready());
-
-        if let Poll::Ready(Err(err)) = poll {
-            assert_eq!(err.kind(), ErrorKind::TimedOut);
-        } else {
-            panic!("expect timeout");
-        }
-    }
-
     #[test]
     fn test_deadline() {
         let timer = global_reactor().deadline(Instant::now());
 
-        sleep(Duration::from_millis(400));
+        sleep(Duration::from_millis(200));
 
         assert!(
             global_reactor()

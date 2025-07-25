@@ -283,7 +283,7 @@ impl QuicConnDispatcher {
                 Poll::Pending => {}
             }
 
-            state.reactor.deregister_timer(timer)?;
+            state.reactor.deregister_timer(timer);
             state.send_waker = None;
         }
 
@@ -344,7 +344,7 @@ impl QuicConnDispatcher {
                                 // The deadline has expired.
                                 state.quiche_conn.on_timeout();
 
-                                state.reactor.deregister_timer(timer)?;
+                                state.reactor.deregister_timer(timer);
 
                                 log::trace!(
                                     "QuicConn({}): send data directly on_timout, trace_id={:?}, timeout={:?}",

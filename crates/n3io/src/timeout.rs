@@ -46,9 +46,7 @@ pub struct Timeout<Fut> {
 
 impl<Fut> Drop for Timeout<Fut> {
     fn drop(&mut self) {
-        if let Err(err) = self.reactor.deregister_timer(self.timer) {
-            log::error!("failed to deregister timer({:?}).", err);
-        }
+        self.reactor.deregister_timer(self.timer);
     }
 }
 

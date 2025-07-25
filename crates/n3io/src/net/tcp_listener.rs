@@ -50,7 +50,7 @@ impl TcpListener {
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
         let (mut mio_tcp_stream, raddr) = poll_fn(|cx| {
             self.reactor
-                .poll_io(cx, self.token, Interest::READABLE, None, |_| {
+                .poll_io(cx, self.token, Interest::READABLE, |_| {
                     self.mio_tcp_listener.accept()
                 })
         })

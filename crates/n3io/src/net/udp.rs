@@ -25,10 +25,8 @@ pub struct UdpSocket {
 impl UdpSocket {
     /// shutdown the read and write of this udp socket.
     pub fn shutdown(&self) -> Result<()> {
-        self.reactor.shutdown_read(self.token)?;
-        self.reactor.shutdown_write(self.token)?;
-
-        Ok(())
+        self.reactor
+            .shutdown(self.token, Interest::READABLE.add(Interest::WRITABLE))
     }
     /// Returns the immutable reference to the inner mio socket.
     pub fn mio_socket(&self) -> &mio::net::UdpSocket {
@@ -62,7 +60,7 @@ impl UdpSocket {
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
         poll_fn(|cx| {
             self.reactor
-                .poll_io(cx, self.token, Interest::READABLE, None, |_| {
+                .poll_io(cx, self.token, Interest::READABLE, |_| {
                     self.mio_udp_socket.recv_from(buf)
                 })
         })
@@ -73,7 +71,7 @@ impl UdpSocket {
     pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> Result<usize> {
         poll_fn(|cx| {
             self.reactor
-                .poll_io(cx, self.token, Interest::WRITABLE, None, |_| {
+                .poll_io(cx, self.token, Interest::WRITABLE, |_| {
                     self.mio_udp_socket.send_to(buf, target)
                 })
         })
@@ -112,7 +110,7 @@ pub mod udp_group {
             self.socket
                 .reactor
                 .clone()
-                .poll_io(cx, self.socket.token, Interest::READABLE, None, |_| {
+                .poll_io(cx, self.socket.token, Interest::READABLE, |_| {
                     self.socket.clone().mio_udp_socket.recv_from(buf)
                 })
                 .map_ok(|(read_size, from)| {

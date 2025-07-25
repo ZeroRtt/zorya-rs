@@ -151,7 +151,9 @@ impl<T> TimeWheel<T> {
 
     /// Spin the wheel according to the current time and detect(returns) the expiry timers.
     pub fn spin(&mut self, wakers: &mut Vec<T>) {
-        self.ticks = self.instant_to_ticks(Instant::now());
+        let interval = (Instant::now() - self.start).as_micros() as u64;
+
+        self.ticks = interval / self.tick_interval;
 
         while let Some(slot) = self.priority_queue.peek() {
             if slot.0 > self.ticks {

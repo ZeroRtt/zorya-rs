@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "n3agent"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "clap",
  "color-print",

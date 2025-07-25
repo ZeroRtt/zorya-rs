@@ -331,12 +331,14 @@ impl Reactor {
                         .expect("multi-thread call same timer");
 
                     if ticks.is_none() {
+                        log::trace!("directly timeout, token={:?}", timer);
                         *state = IoState::Timeout;
                         return Poll::Ready(Ok(()));
                     }
 
                     match &*state {
                         IoState::Timeout => {
+                            log::trace!("timeout, token={:?}", timer);
                             // timer is already expired.
                             return Poll::Ready(Ok(()));
                         }

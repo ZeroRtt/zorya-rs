@@ -336,8 +336,8 @@ impl QuicConnDispatcher {
                         )));
                     }
 
-                    if let Some(timeout) = state.quiche_conn.timeout() {
-                        let timer = state.reactor.deadline(Instant::now() + timeout);
+                    if let Some(timeout) = state.quiche_conn.timeout_instant() {
+                        let timer = state.reactor.deadline(timeout);
 
                         match state.reactor.poll_timeout(cx, timer) {
                             Poll::Ready(_) => {
@@ -346,12 +346,23 @@ impl QuicConnDispatcher {
 
                                 state.reactor.deregister_timer(timer);
 
-                                log::trace!(
-                                    "QuicConn({}): send data directly on_timout, trace_id={:?}, timeout={:?}",
-                                    state.quiche_conn.is_server(),
-                                    state.quiche_conn.trace_id(),
-                                    timeout
-                                );
+                                let now = Instant::now();
+
+                                if now < timeout {
+                                    log::trace!(
+                                        "QuicConn({}): send data directly on_timout, trace_id={:?}, timeout={:?}",
+                                        state.quiche_conn.is_server(),
+                                        state.quiche_conn.trace_id(),
+                                        timeout - now
+                                    );
+                                } else {
+                                    log::trace!(
+                                        "QuicConn({}): send data directly on_timout, trace_id={:?}, timeout=-{:?}",
+                                        state.quiche_conn.is_server(),
+                                        state.quiche_conn.trace_id(),
+                                        now - timeout
+                                    );
+                                }
 
                                 continue;
                             }

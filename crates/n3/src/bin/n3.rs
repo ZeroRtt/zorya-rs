@@ -92,7 +92,7 @@ struct Cli {
     initial_max_stream_data: u64,
 
     /// Sets the max_idle_timeout transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 10 * 1000)]
+    #[arg(long, value_name = "SIZE", default_value_t = 60 * 1000)]
     max_idle_timeout: u64,
 
     /// Sets the `max_ack_delay` transport parameter, in milliseconds.

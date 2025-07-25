@@ -3,6 +3,7 @@ use std::{
     io::{ErrorKind, Read, Result, Write},
     net::SocketAddr,
     sync::Arc,
+    task::Poll,
 };
 
 use futures::{AsyncRead, AsyncWrite};
@@ -77,11 +78,22 @@ impl AsyncWrite for TcpStreamWriter {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<Result<usize>> {
-        self.0
+        match self
+            .0
             .reactor
             .poll_io(cx, self.0.token, Interest::WRITABLE, |_| {
                 (&self.0.as_ref().mio_tcp_stream).write(buf)
-            })
+            }) {
+            std::task::Poll::Ready(Ok(write_size)) => {
+                log::trace!(
+                    "tcp_stream write, len={}, to={:?}",
+                    write_size,
+                    self.0.as_ref().mio_tcp_stream.peer_addr()
+                );
+                Poll::Ready(Ok(write_size))
+            }
+            r => r,
+        }
     }
 
     fn poll_flush(
@@ -114,11 +126,22 @@ impl AsyncRead for TcpStreamReader {
         cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
     ) -> std::task::Poll<Result<usize>> {
-        self.0
+        match self
+            .0
             .reactor
             .poll_io(cx, self.0.token, Interest::READABLE, |_| {
                 (&self.0.as_ref().mio_tcp_stream).read(&mut *buf)
-            })
+            }) {
+            std::task::Poll::Ready(Ok(write_size)) => {
+                log::trace!(
+                    "tcp_stream read, len={}, from={:?}",
+                    write_size,
+                    self.0.as_ref().mio_tcp_stream.peer_addr()
+                );
+                Poll::Ready(Ok(write_size))
+            }
+            r => r,
+        }
     }
 }
 

@@ -131,6 +131,12 @@ impl QuicConn {
 
         let max_send_udp_payload_size = quiche_conn.max_send_udp_payload_size();
 
+        log::trace!(
+            "quiche conn, id={}, max_send_udp_payload_size={}",
+            quiche_conn.trace_id(),
+            max_send_udp_payload_size
+        );
+
         let mut buf = vec![0; max_send_udp_payload_size];
 
         let dispatcher = QuicConnDispatcher::new(quiche_conn, reactor.clone());

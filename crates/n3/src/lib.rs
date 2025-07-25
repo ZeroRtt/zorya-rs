@@ -10,7 +10,7 @@ use std::{
 use futures::{AsyncWriteExt, io::copy};
 use n3_spawner::spawn;
 use n3io::net::TcpStream;
-use n3quic::{QuicConn, QuicConnExt, QuicServer};
+use n3quic::{QuicConn, QuicConnExt, QuicServer, QuicStream};
 
 /// Reverse proxy server.
 pub struct N3 {
@@ -66,98 +66,113 @@ impl N3 {
         loop {
             let inbound = conn.accept().await?;
 
-            let outbound = TcpStream::connect(raddr).await?;
-
-            let stream_id = inbound.id();
-
-            let laddr = outbound.mio_socket().local_addr()?;
-
-            log::info!(
-                "new pipe quic({},{}) => tcp({},{})",
-                trace_id,
-                stream_id,
-                laddr,
-                raddr
-            );
-
-            let (mut inbound_writer, inbound_reader) = inbound.split();
-            let (mut outbound_writer, outbound_reader) = outbound.split();
-
-            let trace_id_owned = trace_id.to_owned();
-
+            let trace_id = trace_id.to_owned();
             spawn(async move {
-                match copy(outbound_reader, &mut inbound_writer).await {
-                    Ok(len) => {
-                        log::info!(
-                            "stream(backward) is closed, quic({},{}) <== tcp({},{}), trans_size={}",
-                            trace_id_owned,
-                            stream_id,
-                            laddr,
-                            raddr,
-                            len
-                        );
-                    }
-                    Err(err) => {
-                        log::error!(
-                            "stream(backward) is broken, quic({},{}) <== tcp({},{}), err={}",
-                            trace_id_owned,
-                            stream_id,
-                            laddr,
-                            raddr,
-                            err
-                        );
-                    }
-                }
+                let stream_id = inbound.id();
 
-                if let Err(err) = inbound_writer.close().await {
-                    log::trace!(
-                        "stream(backward) close writer, quic({},{}) ==> tcp({},{}), err={}",
-                        trace_id_owned,
-                        stream_id,
-                        laddr,
-                        raddr,
-                        err
-                    );
-                }
-            })?;
-
-            let trace_id_owned = trace_id.to_owned();
-
-            spawn(async move {
-                match copy(inbound_reader, &mut outbound_writer).await {
-                    Ok(len) => {
-                        log::info!(
-                            "stream(forward) is closed, quic({},{}) ==> tcp({},{}), trans_size={}",
-                            trace_id_owned,
-                            stream_id,
-                            laddr,
-                            raddr,
-                            len
-                        );
-                    }
-                    Err(err) => {
-                        log::error!(
-                            "stream(forward) is broken, quic({},{}) ==> tcp({},{}), err={}",
-                            trace_id_owned,
-                            stream_id,
-                            laddr,
-                            raddr,
-                            err
-                        );
-                    }
-                }
-
-                if let Err(err) = outbound_writer.close().await {
-                    log::error!(
-                        "stream(forward) close writer, quic({},{}) <== tcp({},{}), err={}",
-                        trace_id_owned,
-                        stream_id,
-                        laddr,
-                        raddr,
-                        err
-                    );
+                if let Err(err) = Self::create_channel(inbound, raddr, trace_id.clone()).await {
+                    log::error!("create channel ({},{}), err={}", trace_id, stream_id, err);
                 }
             })?;
         }
+    }
+
+    async fn create_channel(
+        inbound: QuicStream,
+        raddr: SocketAddr,
+        trace_id: String,
+    ) -> Result<()> {
+        let outbound = TcpStream::connect(raddr).await?;
+
+        let stream_id = inbound.id();
+
+        let laddr = outbound.mio_socket().local_addr()?;
+
+        log::info!(
+            "new pipe quic({},{}) => tcp({},{})",
+            trace_id,
+            stream_id,
+            laddr,
+            raddr
+        );
+
+        let (mut inbound_writer, inbound_reader) = inbound.split();
+        let (mut outbound_writer, outbound_reader) = outbound.split();
+
+        let trace_id_owned = trace_id.to_owned();
+
+        spawn(async move {
+            match copy(outbound_reader, &mut inbound_writer).await {
+                Ok(len) => {
+                    log::info!(
+                        "stream(backward) is closed, quic({},{}) <== tcp({},{}), trans_size={}",
+                        trace_id_owned,
+                        stream_id,
+                        laddr,
+                        raddr,
+                        len
+                    );
+                }
+                Err(err) => {
+                    log::error!(
+                        "stream(backward) is broken, quic({},{}) <== tcp({},{}), err={}",
+                        trace_id_owned,
+                        stream_id,
+                        laddr,
+                        raddr,
+                        err
+                    );
+                }
+            }
+
+            if let Err(err) = inbound_writer.close().await {
+                log::trace!(
+                    "stream(backward) close writer, quic({},{}) ==> tcp({},{}), err={}",
+                    trace_id_owned,
+                    stream_id,
+                    laddr,
+                    raddr,
+                    err
+                );
+            }
+        })?;
+
+        spawn(async move {
+            match copy(inbound_reader, &mut outbound_writer).await {
+                Ok(len) => {
+                    log::info!(
+                        "stream(forward) is closed, quic({},{}) ==> tcp({},{}), trans_size={}",
+                        trace_id,
+                        stream_id,
+                        laddr,
+                        raddr,
+                        len
+                    );
+                }
+                Err(err) => {
+                    log::error!(
+                        "stream(forward) is broken, quic({},{}) ==> tcp({},{}), err={}",
+                        trace_id,
+                        stream_id,
+                        laddr,
+                        raddr,
+                        err
+                    );
+                }
+            }
+
+            if let Err(err) = outbound_writer.close().await {
+                log::error!(
+                    "stream(forward) close writer, quic({},{}) <== tcp({},{}), err={}",
+                    trace_id,
+                    stream_id,
+                    laddr,
+                    raddr,
+                    err
+                );
+            }
+        })?;
+
+        Ok(())
     }
 }

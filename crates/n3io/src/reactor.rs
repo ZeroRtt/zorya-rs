@@ -10,7 +10,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
-    thread::sleep,
     time::{Duration, Instant},
 };
 
@@ -246,8 +245,6 @@ impl Reactor {
                     }
                 }
             }
-
-            sleep(tick_interval);
         }
     }
 
@@ -555,6 +552,8 @@ pub use global::*;
 #[cfg(feature = "global_reactor")]
 #[cfg(test)]
 mod tests {
+
+    use std::thread::sleep;
 
     use futures_test::task::noop_context;
 

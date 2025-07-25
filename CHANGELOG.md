@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.13] - 2025-07-26
+
+- n3io: reactor::time-wheel, remove unnecessary sleep.
+
 ## [0.1.12] - 2025-07-25
 
 - timing-wheel: rewrite `TimeWheel`.

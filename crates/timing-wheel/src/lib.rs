@@ -70,6 +70,18 @@ impl<T> TimeWheel<T> {
         self.counter
     }
 
+    fn instant_to_ticks(&self, deadline: Instant) -> u64 {
+        let interval = (deadline - self.start).as_micros() as u64;
+
+        let mut ticks = interval / self.tick_interval;
+
+        if interval % self.tick_interval != 0 {
+            ticks += 1;
+        }
+
+        ticks
+    }
+
     /// Create a new timer using provided `deadline`.
     ///
     /// Return `None` if the deadline is already reach.
@@ -94,13 +106,7 @@ impl<T> TimeWheel<T> {
     /// assert_eq!(wakers.into_iter().map(|v| v.1).collect::<Vec<_>>(), vec![()]);
     /// ```
     pub fn deadline(&mut self, deadline: Instant, value: T) -> Option<u64> {
-        let interval = (deadline - self.start).as_micros() as u64;
-
-        let mut ticks = interval / self.tick_interval;
-
-        if interval % self.tick_interval != 0 {
-            ticks += 1;
-        }
+        let ticks = self.instant_to_ticks(deadline);
 
         if !(ticks > self.ticks) {
             return None;
@@ -145,7 +151,7 @@ impl<T> TimeWheel<T> {
 
     /// Spin the wheel according to the current time and detect(returns) the expiry timers.
     pub fn spin(&mut self, wakers: &mut Vec<(u64, T)>) {
-        self.ticks = (Instant::now() - self.start).as_micros() as u64 / self.tick_interval;
+        self.ticks = self.instant_to_ticks(Instant::now());
 
         while let Some(slot) = self.priority_queue.peek() {
             if slot.0 > self.ticks {
@@ -264,7 +270,7 @@ mod tests {
 
         time_wheel.after(Duration::from_millis(1), ());
 
-        sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(1));
 
         let mut wakers = vec![];
 

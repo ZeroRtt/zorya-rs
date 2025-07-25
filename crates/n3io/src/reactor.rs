@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
     io::{Error, ErrorKind, Result},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -43,7 +43,7 @@ struct ReactorImpl {
     /// stats for io writting ops.
     io_writable_stats: DashMap<Token, IoState>,
     /// timing-wheel
-    timing_wheel: Mutex<TimeWheel<Token>>,
+    timing_wheel: TimeWheel<Token>,
     /// mio registry.
     registry: Registry,
 }
@@ -54,7 +54,7 @@ impl ReactorImpl {
             token_gen: Default::default(),
             io_readable_stats: Default::default(),
             io_writable_stats: Default::default(),
-            timing_wheel: Mutex::new(TimeWheel::new(tick_interval)),
+            timing_wheel: TimeWheel::new(tick_interval),
             registry,
         }
     }
@@ -225,18 +225,19 @@ impl Reactor {
     }
 
     fn timing_wheel_ticks(this: Arc<ReactorImpl>, tick_interval: Duration) {
-        let mut wakers = vec![];
+        let mut events = vec![];
         loop {
-            this.timing_wheel.lock().unwrap().spin(&mut wakers);
+            this.timing_wheel.poll(&mut events);
 
-            for token in wakers.drain(..) {
+            for token in events.drain(..) {
+                log::trace!("raise timeout event, token={:?}", token);
                 if let Some(mut stat) = this.io_readable_stats.get_mut(&token) {
                     let old = std::mem::replace(&mut *stat, IoState::Timeout);
                     drop(stat);
 
                     match old {
                         IoState::Timer(waker) => {
-                            log::trace!("raise timeout event, token={:?}", token);
+                            log::trace!("wake timer, token={:?}", token);
                             waker.wake();
                         }
                         _ => {
@@ -317,12 +318,7 @@ impl Reactor {
 
                     drop(state);
 
-                    let ticks = self
-                        .0
-                        .timing_wheel
-                        .lock()
-                        .unwrap()
-                        .deadline(deadline, timer);
+                    let ticks = self.0.timing_wheel.deadline(deadline, timer);
 
                     let mut state = self
                         .0
@@ -535,7 +531,7 @@ mod global {
                 return f();
             }
 
-            Reactor::new(1024, Duration::from_millis(200)).unwrap()
+            Reactor::new(1024, Duration::from_millis(20)).unwrap()
         })
     }
 
@@ -564,13 +560,18 @@ mod tests {
 
     use super::*;
 
-    use std::thread::sleep;
-
     #[test]
     fn test_deadline() {
+        // pretty_env_logger::init();
         let timer = global_reactor().deadline(Instant::now());
 
-        sleep(Duration::from_millis(200));
+        assert!(
+            global_reactor()
+                .poll_timeout(&mut noop_context(), timer)
+                .is_pending()
+        );
+
+        sleep(Duration::from_millis(400));
 
         assert!(
             global_reactor()
@@ -586,7 +587,7 @@ mod tests {
                 .is_pending()
         );
 
-        sleep(Duration::from_millis(400));
+        sleep(Duration::from_millis(500));
 
         assert!(
             global_reactor()

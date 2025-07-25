@@ -126,6 +126,7 @@ async fn max_active_conn_size() {
 
 #[futures_test::test]
 async fn server_drop_conn() {
+    // pretty_env_logger::init_timed();
     let laddrs = repeat("127.0.0.1:0".parse().unwrap())
         .take(20)
         .collect::<Vec<_>>();
@@ -144,7 +145,7 @@ async fn server_drop_conn() {
 
     drop(inbound);
 
-    sleep(Duration::from_millis(400));
+    sleep(Duration::from_millis(200));
 
     assert!(outbound.is_closed());
 

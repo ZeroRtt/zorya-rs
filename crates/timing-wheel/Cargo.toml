@@ -7,10 +7,5 @@ name = "timing-wheel"
 repository = "https://github.com/quic-lab/n3/crates/timing-wheel"
 version = "0.1.5"
 
-[dev-dependencies]
-divan = "^0.1"
-
-
-[[bench]]
-name = "bench_timing_wheel"
-harness = false
+[dependencies]
+log = { version = "^0.4" }

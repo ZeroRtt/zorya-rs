@@ -369,13 +369,25 @@ impl QuicConnDispatcher {
                             Poll::Pending => {}
                         }
 
-                        log::trace!(
-                            "QuicConn({}): send data pending, trace_id={:?}, timeout={:?}, timer={:?}",
-                            state.quiche_conn.is_server(),
-                            state.quiche_conn.trace_id(),
-                            timeout,
-                            timer
-                        );
+                        let now = Instant::now();
+
+                        if now < timeout {
+                            log::trace!(
+                                "QuicConn({}): send data pending, trace_id={:?}, timeout={:?}, timer={:?}",
+                                state.quiche_conn.is_server(),
+                                state.quiche_conn.trace_id(),
+                                timeout - now,
+                                timer
+                            );
+                        } else {
+                            log::trace!(
+                                "QuicConn({}): send data pending, trace_id={:?}, timeout=-{:?}, timer={:?}",
+                                state.quiche_conn.is_server(),
+                                state.quiche_conn.trace_id(),
+                                now - timeout,
+                                timer
+                            );
+                        }
 
                         state.on_timeout_timer = Some(timer);
                     }

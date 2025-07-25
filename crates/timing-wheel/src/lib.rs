@@ -5,43 +5,18 @@
 //! During [`spin`], it only needs to compare the timer ticks at the head of the
 //! heap to quickly detect expired timers.
 //!
-//! # Examples
-//!
-//! ```
-//! use std::time::{ Duration, Instant };
-//! use timing_wheel::TimeWheel;
-//! use std::thread::sleep;
-//!
-//! let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
-//!
-//! time_wheel.deadline(Instant::now() + Duration::from_millis(1), ());
-//!
-//! sleep(Duration::from_millis(2));
-//!
-//! let mut wakers = vec![];
-//!
-//! time_wheel.spin(&mut wakers);
-//!
-//! assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
-//! ```
-//!
-//! [`spin`]: TimeWheel::spin
 //! [`Hashed and Hierarchical Timing Wheels`]: https://dl.acm.org/doi/pdf/10.1145/41457.37504
 
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
+    sync::{Condvar, Mutex},
     time::{Duration, Instant},
 };
 
 type Slot = Reverse<u64>;
 
-/// A binary-heap based timing wheel implementation.
-pub struct TimeWheel<T> {
-    /// The timewheel start timestamp.
-    start: Instant,
-    /// timewheel tick interval in secs.
-    tick_interval: u64,
+struct TimeWheelImpl<T> {
     /// ticks
     ticks: u64,
     /// slot queue.
@@ -52,120 +27,126 @@ pub struct TimeWheel<T> {
     counter: usize,
 }
 
-impl<T> TimeWheel<T> {
-    /// Create a time-wheel with minimum time interval resolution `tick_interval`.
-    pub fn new(tick_interval: Duration) -> Self {
+impl<T> TimeWheelImpl<T> {
+    fn new() -> Self {
         Self {
-            tick_interval: tick_interval.as_micros() as u64,
             ticks: 0,
-            start: Instant::now(),
             priority_queue: Default::default(),
             timers: Default::default(),
             counter: 0,
         }
     }
+}
 
-    /// Returns the number of alive timers.
-    pub fn len(&self) -> usize {
-        self.counter
+/// A binary-heap based timing wheel implementation.
+pub struct TimeWheel<T> {
+    /// The timewheel start timestamp.
+    start: Instant,
+    /// timewheel tick interval in secs.
+    tick_interval: u64,
+    /// sync data.
+    sys: Mutex<TimeWheelImpl<T>>,
+    /// cond variable.
+    cond: Condvar,
+}
+
+impl<T> TimeWheel<T> {
+    /// Create a time-wheel with minimum time interval resolution `tick_interval`.
+    pub fn new(tick_interval: Duration) -> Self {
+        Self {
+            start: Instant::now(),
+            tick_interval: tick_interval.as_micros() as u64,
+            sys: Mutex::new(TimeWheelImpl::new()),
+            cond: Condvar::new(),
+        }
     }
 
-    fn instant_to_ticks(&self, deadline: Instant) -> u64 {
-        let interval = (deadline - self.start).as_micros() as u64;
+    /// Create new deadline.
+    ///
+    /// Returns tick number, if success.
+    ///
+    /// Returns `None`, if the deadline is already expired.
+    pub fn deadline(&self, deadline: Instant, value: T) -> Option<u64> {
+        let duration = (deadline - self.start).as_micros() as u64;
 
-        let mut ticks = interval / self.tick_interval;
+        let mut ticks = duration / self.tick_interval;
 
-        if interval % self.tick_interval != 0 {
+        if duration % self.tick_interval != 0 {
             ticks += 1;
         }
 
-        ticks
-    }
+        let mut sys = self.sys.lock().unwrap();
 
-    /// Create a new timer using provided `deadline`.
-    ///
-    /// Return `None` if the deadline is already reach.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::{ Duration, Instant };
-    /// use timing_wheel::TimeWheel;
-    /// use std::thread::sleep;
-    ///
-    /// let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
-    ///
-    /// time_wheel.deadline(Instant::now() + Duration::from_millis(1), ());
-    ///
-    /// sleep(Duration::from_millis(2));
-    ///
-    /// let mut wakers = vec![];
-    ///
-    /// time_wheel.spin(&mut wakers);
-    ///
-    /// assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
-    /// ```
-    pub fn deadline(&mut self, deadline: Instant, value: T) -> Option<u64> {
-        let ticks = self.instant_to_ticks(deadline);
+        if !(ticks > sys.ticks) {
+            log::trace!(
+                "deadline: timer is already expired, ticks={}, process={}",
+                ticks,
+                sys.ticks
+            );
 
-        if !(ticks > self.ticks) {
             return None;
         }
 
-        if let Some(timers) = self.timers.get_mut(&ticks) {
+        log::trace!(
+            "deadline: create timer, ticks={}, process={}",
+            ticks,
+            sys.ticks
+        );
+
+        if let Some(timers) = sys.timers.get_mut(&ticks) {
             timers.push(value);
         } else {
-            self.timers.insert(ticks, vec![value]);
-            self.priority_queue.push(Reverse(ticks));
+            sys.timers.insert(ticks, vec![value]);
+            sys.priority_queue.push(Reverse(ticks));
         }
 
-        self.counter += 1;
+        sys.counter += 1;
+
+        self.cond.notify_one();
 
         Some(ticks)
     }
 
-    /// Create a new `deadline` with a value equal to `Instant::now() + duration`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::Duration;
-    /// use timing_wheel::TimeWheel;
-    /// use std::thread::sleep;
-    ///
-    /// let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
-    ///
-    /// time_wheel.after(Duration::from_millis(1), ());
-    ///
-    /// sleep(Duration::from_millis(2));
-    ///
-    /// let mut wakers = vec![];
-    ///
-    /// time_wheel.spin(&mut wakers);
-    ///
-    /// assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
-    /// ```
-    pub fn after(&mut self, duration: Duration, value: T) -> Option<u64> {
-        self.deadline(Instant::now() + duration, value)
-    }
+    /// Poll timeout timers.
+    pub fn poll(&self, events: &mut Vec<T>) {
+        let len = events.len();
 
-    /// Spin the wheel according to the current time and detect(returns) the expiry timers.
-    pub fn spin(&mut self, wakers: &mut Vec<T>) {
-        let interval = (Instant::now() - self.start).as_micros() as u64;
+        let mut sys = self.sys.lock().unwrap();
 
-        self.ticks = interval / self.tick_interval;
+        loop {
+            let interval = (Instant::now() - self.start).as_micros() as u64;
 
-        while let Some(slot) = self.priority_queue.peek() {
-            if slot.0 > self.ticks {
-                break;
+            sys.ticks = interval / self.tick_interval;
+
+            let mut duration = None;
+
+            while let Some(slot) = sys.priority_queue.peek() {
+                if slot.0 > sys.ticks {
+                    duration = Some(Duration::from_micros(
+                        (slot.0 - sys.ticks) * self.tick_interval,
+                    ));
+
+                    break;
+                }
+
+                let slot = sys.priority_queue.pop().unwrap().0;
+
+                if let Some(mut timers) = sys.timers.remove(&slot) {
+                    sys.counter -= timers.len();
+
+                    events.append(&mut timers);
+                }
             }
 
-            let slot = self.priority_queue.pop().unwrap().0;
+            if events.len() > len {
+                return;
+            }
 
-            if let Some(mut timers) = self.timers.remove(&slot) {
-                self.counter -= timers.len();
-
-                wakers.append(&mut timers);
+            if let Some(duration) = duration {
+                log::trace!("poll: wait timeout {:?}", duration);
+                (sys, _) = self.cond.wait_timeout(sys, duration).unwrap();
+            } else {
+                sys = self.cond.wait(sys).unwrap();
             }
         }
     }
@@ -173,97 +154,94 @@ impl<T> TimeWheel<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread::sleep, time::Duration};
+    use std::{
+        sync::{Arc, mpsc},
+        thread::spawn,
+        time::{Duration, Instant},
+    };
 
-    use super::*;
+    use crate::TimeWheel;
 
     #[test]
-    fn test_len() {
-        let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
+    fn test_already_expired() {
+        let time_wheel = TimeWheel::<()>::new(Duration::from_millis(200));
 
-        time_wheel
-            .deadline(time_wheel.start + Duration::from_millis(1), ())
-            .expect("deadline is valid.");
-
-        assert_eq!(time_wheel.len(), 1);
-
-        sleep(Duration::from_millis(1));
-
-        let mut wakers = vec![];
-
-        time_wheel.spin(&mut wakers);
-
-        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
+        assert!(
+            time_wheel
+                .deadline(Instant::now() - Duration::from_millis(200), ())
+                .is_none()
+        );
     }
 
     #[test]
-    fn test_order() {
-        let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
+    fn test_poll_notify() {
+        let time_wheel = Arc::new(TimeWheel::<()>::new(Duration::from_millis(200)));
 
-        let deadline = time_wheel.start + Duration::from_millis(1);
+        let time_wheel_cloned = time_wheel.clone();
 
-        time_wheel
-            .deadline(deadline, 1)
-            .expect("deadline is valid.");
+        let (sender, receiver) = mpsc::channel();
 
-        time_wheel
-            .deadline(deadline, 2)
-            .expect("deadline is valid.");
+        spawn(move || {
+            let mut events = vec![];
+            time_wheel_cloned.poll(&mut events);
+            sender.send(events).unwrap();
+        });
 
-        sleep(Duration::from_millis(1));
+        assert!(receiver.try_recv().is_err());
 
-        let mut wakers = vec![];
+        assert!(time_wheel.deadline(Instant::now(), ()).is_some());
 
-        time_wheel.spin(&mut wakers);
-
-        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(receiver.recv().unwrap(), vec![()]);
     }
 
     #[test]
-    fn test_order2() {
-        let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
+    fn test_wait() {
+        let time_wheel = Arc::new(TimeWheel::<()>::new(Duration::from_millis(200)));
 
-        time_wheel
-            .deadline(time_wheel.start + Duration::from_millis(500), 1)
-            .expect("deadline is valid.");
+        let time_wheel_cloned = time_wheel.clone();
 
-        time_wheel
-            .deadline(time_wheel.start + Duration::from_millis(1000), 2)
-            .expect("deadline is valid.");
+        assert!(time_wheel.deadline(Instant::now(), ()).is_some());
 
-        assert_eq!(time_wheel.len(), 2);
+        let (sender, receiver) = mpsc::channel();
 
-        sleep(Duration::from_millis(500));
+        spawn(move || {
+            let mut events = vec![];
+            time_wheel_cloned.poll(&mut events);
+            sender.send(events).unwrap();
 
-        let mut wakers = vec![];
+            let mut events = vec![];
+            time_wheel_cloned.poll(&mut events);
+            sender.send(events).unwrap();
+        });
 
-        time_wheel.spin(&mut wakers);
+        assert_eq!(receiver.recv().unwrap(), vec![()]);
 
-        assert_eq!(wakers.iter().cloned().collect::<Vec<_>>(), vec![1]);
-
-        assert_eq!(time_wheel.len(), 1);
-
-        sleep(Duration::from_millis(1000));
-
-        time_wheel.spin(&mut wakers);
-
-        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![1, 2]);
-
-        assert_eq!(time_wheel.len(), 0);
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
-    fn test_after() {
-        let mut time_wheel = TimeWheel::new(Duration::from_millis(1));
+    fn test_wait2() {
+        let time_wheel = Arc::new(TimeWheel::<()>::new(Duration::from_millis(200)));
 
-        time_wheel.after(Duration::from_millis(1), ());
+        assert!(
+            time_wheel
+                .deadline(Instant::now() + Duration::from_millis(100), ())
+                .is_some()
+        );
 
-        sleep(Duration::from_millis(1));
+        assert!(
+            time_wheel
+                .deadline(Instant::now() + Duration::from_millis(200), ())
+                .is_some()
+        );
 
-        let mut wakers = vec![];
+        let mut events = vec![];
+        time_wheel.poll(&mut events);
 
-        time_wheel.spin(&mut wakers);
+        assert_eq!(events, vec![()]);
 
-        assert_eq!(wakers.into_iter().collect::<Vec<_>>(), vec![()]);
+        time_wheel.poll(&mut events);
+
+        assert_eq!(events, vec![(), ()]);
     }
 }

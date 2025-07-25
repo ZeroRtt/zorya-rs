@@ -95,7 +95,7 @@ struct Cli {
     initial_max_streams: u64,
 
     /// Set the io timer tick interval, in milliseconds.
-    #[arg(long, value_name = "INTERVAL", default_value_t = 200)]
+    #[arg(long, value_name = "INTERVAL", default_value_t = 20)]
     io_timer_tick_interval: u64,
 
     /// Debug mode, print verbose output informations.

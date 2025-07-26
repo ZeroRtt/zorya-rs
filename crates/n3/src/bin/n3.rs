@@ -99,6 +99,10 @@ struct Cli {
     #[arg(long, value_name = "SIZE", default_value_t = 25)]
     max_ack_delay: u64,
 
+    /// Sets the ack_delay_exponent transport parameter.
+    #[arg(long, value_name = "SIZE", default_value_t = 3)]
+    ack_frequency_exponent: u64,
+
     /// Set the io timer tick interval, in milliseconds.
     #[arg(long, value_name = "INTERVAL", default_value_t = 20)]
     io_timer_tick_interval: u64,
@@ -184,6 +188,7 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
                     config.set_initial_max_streams_uni(cli.initial_max_streams);
                     config.set_max_idle_timeout(cli.max_idle_timeout);
                     config.set_max_ack_delay(cli.max_ack_delay);
+                    config.set_ack_delay_exponent(cli.ack_frequency_exponent);
 
                     config
                         .load_cert_chain_from_pem_file(cli.cert.to_str().unwrap())

@@ -87,6 +87,10 @@ struct Cli {
     #[arg(long, value_name = "SIZE", default_value_t = 40)]
     max_ack_delay: u64,
 
+    /// Sets the ack_delay_exponent transport parameter.
+    #[arg(long, value_name = "SIZE", default_value_t = 3)]
+    ack_frequency_exponent: u64,
+
     /// Sets the quiche `initial_max_streams_bidi` transport parameter.
     ///
     /// When set to a non-zero value quiche will only allow v number of concurrent remotely-initiated bidirectional
@@ -149,6 +153,7 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
                 config.set_initial_max_streams_uni(cli.initial_max_streams);
                 config.set_max_idle_timeout(cli.max_idle_timeout);
                 config.set_max_ack_delay(cli.max_ack_delay);
+                config.set_ack_delay_exponent(cli.ack_frequency_exponent);
 
                 if let Some(cert) = &cli.cert {
                     config

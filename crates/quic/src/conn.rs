@@ -267,6 +267,7 @@ impl QuicConnDispatcher {
         cx: &mut Context<'_>,
         out: &mut [u8],
     ) -> Poll<Result<(usize, SendInfo)>> {
+        log::trace!("poll_send");
         let mut state = self.0.lock().unwrap();
 
         if let Some(timer) = state.on_timeout_timer.take() {
@@ -416,6 +417,7 @@ impl QuicConnDispatcher {
         buf: &mut [u8],
         info: RecvInfo,
     ) -> Poll<Result<usize>> {
+        log::trace!("poll_recv");
         let mut state = self.0.lock().unwrap();
 
         let poll = match state.quiche_conn.recv(buf, info) {
@@ -768,6 +770,7 @@ impl Drop for QuicStream {
 
 impl QuicStream {
     fn close_stream(&self) -> Result<()> {
+        log::trace!("close_stream, id={}", self.0);
         let mut state = self.1.lock().unwrap();
 
         log::trace!(
@@ -837,6 +840,8 @@ impl QuicStream {
         buf: &[u8],
         fin: bool,
     ) -> Poll<Result<usize>> {
+        log::trace!("poll_stream_write, id={}", self.0);
+
         let mut state = self.1.lock().unwrap();
 
         if state.quiche_conn.is_draining() || state.quiche_conn.is_closed() {
@@ -895,6 +900,8 @@ impl QuicStream {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<(usize, bool)>> {
+        log::trace!("poll_stream_read, id={}", self.0);
+
         let mut state = self.1.lock().unwrap();
 
         if state.quiche_conn.is_draining() || state.quiche_conn.is_closed() {

@@ -86,8 +86,9 @@ impl AsyncWrite for TcpStreamWriter {
             }) {
             std::task::Poll::Ready(Ok(write_size)) => {
                 log::trace!(
-                    "tcp_stream write, len={}, to={:?}",
+                    "tcp_stream read, len={}, from={:?}, to={:?}",
                     write_size,
+                    self.0.as_ref().mio_tcp_stream.local_addr(),
                     self.0.as_ref().mio_tcp_stream.peer_addr()
                 );
                 Poll::Ready(Ok(write_size))
@@ -134,9 +135,10 @@ impl AsyncRead for TcpStreamReader {
             }) {
             std::task::Poll::Ready(Ok(write_size)) => {
                 log::trace!(
-                    "tcp_stream read, len={}, from={:?}",
+                    "tcp_stream read, len={}, from={:?}, to={:?}",
                     write_size,
-                    self.0.as_ref().mio_tcp_stream.peer_addr()
+                    self.0.as_ref().mio_tcp_stream.peer_addr(),
+                    self.0.as_ref().mio_tcp_stream.local_addr()
                 );
                 Poll::Ready(Ok(write_size))
             }
@@ -247,7 +249,6 @@ impl Drop for TcpStream {
 }
 
 fn poll_connected(tcp_stream: &mio::net::TcpStream) -> Result<()> {
-    log::trace!("poll_connected...");
     if let Err(err) = tcp_stream.take_error() {
         return Err(err);
     }

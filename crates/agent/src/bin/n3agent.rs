@@ -76,7 +76,7 @@ struct Cli {
     ///
     /// When set to zero, either explicitly or via the default, quiche will not give any flow control
     /// to the peer, preventing it from sending any stream data.
-    #[arg(long, value_name = "SIZE", default_value_t = 1024 * 1024 * 10)]
+    #[arg(long, value_name = "SIZE", default_value_t = 1024 * 1024)]
     initial_max_stream_data: u64,
 
     /// Sets the max_idle_timeout transport parameter, in milliseconds.
@@ -145,7 +145,7 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
     Agent::new(n3_addrs.as_slice())
         .connector(|connector| {
             connector.quiche_config(|config| {
-                config.set_initial_max_data(cli.initial_max_streams * cli.initial_max_stream_data);
+                config.set_initial_max_data(cli.initial_max_stream_data * cli.initial_max_streams);
                 config.set_initial_max_stream_data_bidi_local(cli.initial_max_stream_data);
                 config.set_initial_max_stream_data_bidi_remote(cli.initial_max_stream_data);
                 config.set_initial_max_stream_data_uni(cli.initial_max_stream_data);

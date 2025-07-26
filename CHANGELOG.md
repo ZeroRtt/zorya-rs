@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.16] - 2025-07-26
+
+- n3io: `copy`: force flush when reach the end of the input io.
+
 ## [0.1.15] - 2025-07-26
 
 - timing-wheel: rollback.

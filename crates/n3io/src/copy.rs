@@ -22,6 +22,7 @@ where
         let read_size = read.read(&mut buf).await?;
 
         if read_size == 0 {
+            write.flush().await?;
             return Ok(trans);
         }
 

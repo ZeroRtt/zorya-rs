@@ -189,8 +189,6 @@ async fn run_static_redirect(cli: Cli, target: SocketAddr) -> Result<()> {
                     config.set_max_idle_timeout(cli.max_idle_timeout);
                     config.set_max_ack_delay(cli.max_ack_delay);
                     config.set_ack_delay_exponent(cli.ack_frequency_exponent);
-                    config.set_max_send_udp_payload_size(1350);
-                    config.set_max_recv_udp_payload_size(1350);
 
                     config
                         .load_cert_chain_from_pem_file(cli.cert.to_str().unwrap())

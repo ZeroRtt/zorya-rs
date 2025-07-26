@@ -7,3 +7,4 @@ pub mod reactor;
 pub mod timeout;
 /// reexport mio library.
 pub use mio;
+pub mod copy;

@@ -638,7 +638,7 @@ impl QuicConn {
         }
 
         if let Some(stream_id) = state.incoming_stream_id_fifo.pop_front() {
-            return Poll::Ready(Ok(QuicStream(stream_id, self.0.clone())));
+            return Poll::Ready(Ok(QuicStream::new(stream_id, self.0.clone())));
         }
 
         log::trace!(
@@ -679,7 +679,7 @@ impl QuicConn {
             //     waker.wake();
             // }
 
-            return Ok(QuicStream(stream_id, self.0.clone()));
+            return Ok(QuicStream::new(stream_id, self.0.clone()));
         }
 
         return Err(Error::new(
@@ -714,7 +714,7 @@ impl QuicConn {
             //     waker.wake();
             // }
 
-            Poll::Ready(Ok(QuicStream(stream_id, self.0.clone())))
+            Poll::Ready(Ok(QuicStream::new(stream_id, self.0.clone())))
         } else {
             log::trace!(
                 "Open new outbound, trace_id={}, pending=true",
@@ -768,7 +768,16 @@ impl<'a> Future for OpenStream<'a> {
 }
 
 /// The quic stream socket.
-pub struct QuicStream(u64, Arc<Mutex<QuicConnState>>);
+pub struct QuicStream {
+    stream_id: u64,
+    state: Arc<Mutex<QuicConnState>>,
+}
+
+impl QuicStream {
+    fn new(stream_id: u64, state: Arc<Mutex<QuicConnState>>) -> Self {
+        QuicStream { stream_id, state }
+    }
+}
 
 impl Drop for QuicStream {
     fn drop(&mut self) {
@@ -778,13 +787,13 @@ impl Drop for QuicStream {
 
 impl QuicStream {
     fn close_stream(&self) -> Result<()> {
-        log::trace!("close_stream, id={}", self.0);
-        let mut state = self.1.lock().unwrap();
+        log::trace!("close_stream, id={}", self.stream_id);
+        let mut state = self.state.lock().unwrap();
 
         log::trace!(
             "QuiConn({}): close stream, stream_id={}, conn_id={}, is_draining={}, is_closed={}",
             state.quiche_conn.is_server(),
-            self.0,
+            self.stream_id,
             state.quiche_conn.trace_id(),
             state.quiche_conn.is_draining(),
             state.quiche_conn.is_closed(),
@@ -794,28 +803,30 @@ impl QuicStream {
             return Ok(());
         }
 
-        if let Err(err) = state.quiche_conn.stream_send(self.0, b"", true) {
+        if let Err(err) = state.quiche_conn.stream_send(self.stream_id, b"", true) {
             log::error!(
                 "QuiConn({}): failed to close stream, id={}, trace_id={}, err={}",
                 state.quiche_conn.is_server(),
-                self.0,
+                self.stream_id,
                 state.quiche_conn.trace_id(),
                 err
             );
         }
 
-        if !state.quiche_conn.stream_finished(self.0) {
+        if !state.quiche_conn.stream_finished(self.stream_id) {
             log::trace!(
                 "QuiConn({}): append stream to closing queue, id={}, trace_id={}",
                 state.quiche_conn.is_server(),
-                self.0,
+                self.stream_id,
                 state.quiche_conn.trace_id(),
             );
 
-            state.closing_stream_set.insert(self.0, Instant::now());
+            state
+                .closing_stream_set
+                .insert(self.stream_id, Instant::now());
         } else {
             // force to collect complete streams.
-            state.closing_recv(self.0);
+            state.closing_recv(self.stream_id);
         }
 
         if let Some(waker) = state.send_waker.take() {
@@ -828,12 +839,16 @@ impl QuicStream {
 
     /// Returns id value of this stream.
     pub fn id(&self) -> u64 {
-        self.0
+        self.stream_id
     }
 
     /// Returns true if all the data has been read from the specified stream.
     pub fn is_finished(&self) -> bool {
-        self.1.lock().unwrap().quiche_conn.stream_finished(self.0)
+        self.state
+            .lock()
+            .unwrap()
+            .quiche_conn
+            .stream_finished(self.stream_id)
     }
 
     /// Attempt to write bytes from `buf` into the `stream_id`.
@@ -843,33 +858,21 @@ impl QuicStream {
         buf: &[u8],
         fin: bool,
     ) -> Poll<Result<usize>> {
-        log::trace!("poll_stream_write, id={}", self.0);
+        log::trace!("poll_stream_write, id={}", self.stream_id);
 
-        let mut state = self.1.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
 
-        if state.quiche_conn.is_draining() || state.quiche_conn.is_closed() {
-            log::error!(
-                "QuicConn({}): failed to read from stream, stream_id={}, trace_id={}, err=connection is closed or is draining",
-                state.quiche_conn.is_server(),
-                self.0,
-                state.quiche_conn.trace_id()
-            );
-            return Poll::Ready(Err(Error::new(
-                ErrorKind::BrokenPipe,
-                "Connection is closed or is draining.",
-            )));
-        }
-
-        match state.quiche_conn.stream_send(self.0, buf, fin) {
+        match state.quiche_conn.stream_send(self.stream_id, buf, fin) {
             Ok(written_size) => {
                 log::trace!(
                     "Stream write, stream_id={}, trace_id={}, send_size={}, fin={}, is_server={}",
-                    self.0,
+                    self.stream_id,
                     state.quiche_conn.trace_id(),
                     written_size,
                     fin,
                     state.quiche_conn.is_server()
                 );
+
                 if let Some(waker) = state.send_waker.take() {
                     drop(state);
                     waker.wake();
@@ -878,16 +881,29 @@ impl QuicStream {
                 return Poll::Ready(Ok(written_size));
             }
             Err(quiche::Error::Done) => {
+                if state.quiche_conn.is_draining() || state.quiche_conn.is_closed() {
+                    log::error!(
+                        "QuicConn({}): failed to read from stream, stream_id={}, trace_id={}, err=connection is closed or is draining",
+                        state.quiche_conn.is_server(),
+                        self.stream_id,
+                        state.quiche_conn.trace_id()
+                    );
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::BrokenPipe,
+                        "Connection is closed or is draining.",
+                    )));
+                }
+
                 log::trace!(
                     "QuicConn({}): stream write, stream_id={}, trace_id={}, pending",
                     state.quiche_conn.is_server(),
-                    self.0,
+                    self.stream_id,
                     state.quiche_conn.trace_id()
                 );
 
                 state
                     .stream_writable_wakers
-                    .insert(self.0, cx.waker().clone());
+                    .insert(self.stream_id, cx.waker().clone());
 
                 return Poll::Pending;
             }
@@ -903,25 +919,15 @@ impl QuicStream {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<(usize, bool)>> {
-        log::trace!("poll_stream_read, id={}", self.0);
+        log::trace!("poll_stream_read, id={}", self.stream_id);
 
-        let mut state = self.1.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
 
-        if state.quiche_conn.is_draining() || state.quiche_conn.is_closed() {
-            log::error!(
-                "QuicConn({}): failed to read from stream, stream_id={}, trace_id={}, err=connection is closed or is draining",
-                state.quiche_conn.is_server(),
-                self.0,
-                state.quiche_conn.trace_id()
-            );
-            return Poll::Ready(Ok((0, true)));
-        }
-
-        match state.quiche_conn.stream_recv(self.0, buf) {
+        match state.quiche_conn.stream_recv(self.stream_id, buf) {
             Ok((read_size, fin)) => {
                 log::trace!(
                     "Stream read, stream_id={}, trace_id={}, read_size={}, fin={}, is_server={}",
-                    self.0,
+                    self.stream_id,
                     state.quiche_conn.trace_id(),
                     read_size,
                     fin,
@@ -936,15 +942,26 @@ impl QuicStream {
                 return Poll::Ready(Ok((read_size, fin)));
             }
             Err(quiche::Error::Done) => {
+                if state.quiche_conn.is_draining() || state.quiche_conn.is_closed() {
+                    log::trace!(
+                        "QuicConn({}): failed to read from stream, stream_id={}, trace_id={}, err=connection is closed or is draining",
+                        state.quiche_conn.is_server(),
+                        self.stream_id,
+                        state.quiche_conn.trace_id()
+                    );
+                    return Poll::Ready(Ok((0, true)));
+                }
+
                 log::trace!(
                     "QuicConn({}): stream read, stream_id={}, trace_id={}, pending",
                     state.quiche_conn.is_server(),
-                    self.0,
+                    self.stream_id,
                     state.quiche_conn.trace_id()
                 );
+
                 state
                     .stream_readable_wakers
-                    .insert(self.0, cx.waker().clone());
+                    .insert(self.stream_id, cx.waker().clone());
 
                 return Poll::Pending;
             }

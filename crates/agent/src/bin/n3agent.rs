@@ -84,7 +84,7 @@ struct Cli {
     max_idle_timeout: u64,
 
     /// Sets the `max_ack_delay` transport parameter, in milliseconds.
-    #[arg(long, value_name = "SIZE", default_value_t = 40)]
+    #[arg(long, value_name = "SIZE", default_value_t = 25)]
     max_ack_delay: u64,
 
     /// Sets the ack_delay_exponent transport parameter.
@@ -154,8 +154,6 @@ async fn run_agent(cli: Cli, laddr: SocketAddr) -> Result<()> {
                 config.set_max_idle_timeout(cli.max_idle_timeout);
                 config.set_max_ack_delay(cli.max_ack_delay);
                 config.set_ack_delay_exponent(cli.ack_frequency_exponent);
-                config.set_max_send_udp_payload_size(1350);
-                config.set_max_recv_udp_payload_size(1350);
 
                 if let Some(cert) = &cli.cert {
                     config

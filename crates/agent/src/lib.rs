@@ -5,10 +5,10 @@ use std::{
     time::Duration,
 };
 
-use futures::{AsyncWriteExt, io::copy};
+use futures::AsyncWriteExt;
 
 use n3_spawner::spawn;
-use n3io::{net::TcpListener, timeout::TimeoutExt as _};
+use n3io::{copy::copy, net::TcpListener, timeout::TimeoutExt as _};
 use n3quic::{QuicConn, QuicConnExt, QuicConnector, QuicStream};
 
 #[derive(Debug, Default)]
@@ -178,7 +178,9 @@ impl Agent {
             let trace_id_cloned = trace_id.clone();
 
             spawn(async move {
-                match copy(outbound_reader, &mut inbound_writer).await {
+                let id = format!("tcp({}) <- quic({},{})", from, trace_id_cloned, stream_id,);
+
+                match copy(Some(&id), outbound_reader, &mut inbound_writer, 65535).await {
                     Ok(len) => {
                         log::info!(
                             "stream(backward) is closed, tcp({}) <== quic({},{}), transferred={}",
@@ -211,7 +213,8 @@ impl Agent {
             })?;
 
             spawn(async move {
-                match copy(inbound_reader, &mut outbound_writer).await {
+                let id = format!("tcp({}) -> quic({},{})", from, trace_id, stream_id,);
+                match copy(Some(&id), inbound_reader, &mut outbound_writer, 65535).await {
                     Ok(len) => {
                         log::info!(
                             "stream(forward) is closed, tcp({}) ==> quic({},{}), transferred={}",

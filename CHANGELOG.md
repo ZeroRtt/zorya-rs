@@ -8,6 +8,11 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.1.15] - 2025-07-26
+
+- timing-wheel: rollback.
+- n3io: add new `copy` func.
+
 ## [0.1.14] - 2025-07-26
 
 - timing-wheel: adjust some parameters.

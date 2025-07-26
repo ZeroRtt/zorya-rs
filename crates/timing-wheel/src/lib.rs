@@ -118,10 +118,6 @@ impl<T> TimeWheel<T> {
 
             sys.ticks = interval / self.tick_interval;
 
-            if interval % self.tick_interval != 0 {
-                sys.ticks += 1;
-            }
-
             let mut duration = None;
 
             while let Some(slot) = sys.priority_queue.peek() {

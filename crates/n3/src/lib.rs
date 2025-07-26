@@ -7,9 +7,9 @@ use std::{
     net::{SocketAddr, ToSocketAddrs},
 };
 
-use futures::{AsyncWriteExt, io::copy};
+use futures::AsyncWriteExt;
 use n3_spawner::spawn;
-use n3io::net::TcpStream;
+use n3io::{copy::copy, net::TcpStream};
 use n3quic::{QuicConn, QuicConnExt, QuicServer, QuicStream};
 
 /// Reverse proxy server.
@@ -102,7 +102,11 @@ impl N3 {
         let trace_id_owned = trace_id.to_owned();
 
         spawn(async move {
-            match copy(outbound_reader, &mut inbound_writer).await {
+            let id = format!(
+                "quic({},{}) <- tcp({},{})",
+                trace_id_owned, stream_id, laddr, raddr
+            );
+            match copy(Some(&id), outbound_reader, &mut inbound_writer, 65535).await {
                 Ok(len) => {
                     log::info!(
                         "stream(backward) is closed, quic({},{}) <== tcp({},{}), trans_size={}",
@@ -138,7 +142,12 @@ impl N3 {
         })?;
 
         spawn(async move {
-            match copy(inbound_reader, &mut outbound_writer).await {
+            let id = format!(
+                "quic({},{}) -> tcp({},{})",
+                trace_id, stream_id, laddr, raddr
+            );
+
+            match copy(Some(&id), inbound_reader, &mut outbound_writer, 65545).await {
                 Ok(len) => {
                     log::info!(
                         "stream(forward) is closed, quic({},{}) ==> tcp({},{}), trans_size={}",

@@ -564,13 +564,7 @@ mod tests {
         // pretty_env_logger::init();
         let timer = global_reactor().deadline(Instant::now());
 
-        assert!(
-            global_reactor()
-                .poll_timeout(&mut noop_context(), timer)
-                .is_pending()
-        );
-
-        sleep(Duration::from_millis(400));
+        sleep(Duration::from_millis(200));
 
         assert!(
             global_reactor()

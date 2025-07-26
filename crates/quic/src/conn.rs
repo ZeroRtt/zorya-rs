@@ -86,6 +86,14 @@ impl QuicConnState {
         let mut wakers = vec![];
         let mut ordering_readable_id_set = BinaryHeap::new();
 
+        while let Some(event) = self.quiche_conn.path_event_next() {
+            log::info!(
+                "path event, scid={}, event={:?}",
+                self.quiche_conn.trace_id(),
+                event
+            );
+        }
+
         while let Some(id) = self.quiche_conn.stream_readable_next() {
             ordering_readable_id_set.push(Reverse(id));
         }
@@ -666,10 +674,10 @@ impl QuicConn {
                 state.quiche_conn.trace_id()
             );
 
-            if let Some(waker) = state.send_waker.take() {
-                drop(state);
-                waker.wake();
-            }
+            // if let Some(waker) = state.send_waker.take() {
+            //     drop(state);
+            //     waker.wake();
+            // }
 
             return Ok(QuicStream(stream_id, self.0.clone()));
         }
@@ -701,10 +709,10 @@ impl QuicConn {
                 state.quiche_conn.trace_id()
             );
 
-            if let Some(waker) = state.send_waker.take() {
-                drop(state);
-                waker.wake();
-            }
+            // if let Some(waker) = state.send_waker.take() {
+            //     drop(state);
+            //     waker.wake();
+            // }
 
             Poll::Ready(Ok(QuicStream(stream_id, self.0.clone())))
         } else {
@@ -807,11 +815,6 @@ impl QuicStream {
             state.closing_stream_set.insert(self.0, Instant::now());
         } else {
             // force to collect complete streams.
-            // assert!(
-            //     state.closing_recv(self.0),
-            //     "stream is already finished. call `stream_recv` will only returns (0,true)"
-            // );
-
             state.closing_recv(self.0);
         }
 

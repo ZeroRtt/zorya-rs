@@ -19,3 +19,5 @@ pub use client::*;
 
 /// re-export quiche.
 pub use quiche;
+
+mod mutex;

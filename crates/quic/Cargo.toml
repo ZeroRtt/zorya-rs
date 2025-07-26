@@ -17,11 +17,16 @@ futures = { version = "^0.3", features = ["executor", "thread-pool"] }
 dashmap = { version = "^6.1" }
 cooked-waker = { version = "5.0.0" }
 rand = "0.9.1"
+boxcar = "0.2.13"
 
 [dev-dependencies]
 futures-test = "^0.3"
 pretty_env_logger = "0.5.0"
+divan = "0.1.21"
 
+[[bench]]
+name = "boxcar"
+harness = false
 
 [features]
 default = ["global_reactor", "futures-executor"]
